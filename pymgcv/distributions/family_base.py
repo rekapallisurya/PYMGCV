@@ -38,7 +38,17 @@ class Family(ABC):
         - dmu_deta(eta): derivative dμ/dη
         - variance(mu, dispersion): variance function
         - loglik(y, mu, dispersion): log-likelihood
+        - linkfun(mu): forward link function (default: override in subclass)
+        - initialize(y): sensible starting mu for PIRLS
     """
+
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Forward link: η = g(μ). Default: identity."""
+        return mu.copy()
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Return sensible starting μ for PIRLS. Default: y."""
+        return y.copy()
 
     @abstractmethod
     def linkinv(self, eta: np.ndarray) -> np.ndarray:
@@ -144,6 +154,14 @@ class PoissonFamily(Family):
         """Variance = μ."""
         return mu
 
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Log link: η = log(μ)."""
+        return np.log(np.maximum(mu, 1e-300))
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Starting mu for Poisson: y + 0.1 (avoids log(0))."""
+        return np.maximum(y, 0.0) + 0.1
+
     def loglik(
         self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
     ) -> float:
@@ -181,6 +199,14 @@ class GammaFamily(Family):
     def variance(self, mu: np.ndarray, dispersion: float = 1.0) -> np.ndarray:
         """Variance = φ μ²."""
         return dispersion * mu**2
+
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Log link: η = log(μ)."""
+        return np.log(np.maximum(mu, 1e-300))
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Starting mu for Gamma: max(y, epsilon)."""
+        return np.maximum(y, 1e-6)
 
     def loglik(
         self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
@@ -237,6 +263,14 @@ class TweedieFamily(Family):
     def variance(self, mu: np.ndarray, dispersion: float = 1.0) -> np.ndarray:
         """Variance = φ μ^p."""
         return dispersion * mu**self.power
+
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Log link: η = log(μ)."""
+        return np.log(np.maximum(mu, 1e-300))
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Starting mu for Tweedie: max(y, 0.1)."""
+        return np.maximum(y, 0.1)
 
     def loglik(
         self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
@@ -307,6 +341,21 @@ class BinomialFamily(Family):
             # μ = 1 - exp(-exp(η))
             return 1.0 - np.exp(-np.exp(np.clip(eta, -500, 500)))
 
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Forward link: η = g(μ)."""
+        mu = np.clip(mu, 1e-10, 1 - 1e-10)
+        if self.link == 'logit':
+            return np.log(mu / (1 - mu))
+        elif self.link == 'probit':
+            return special.ndtri(mu)
+        elif self.link == 'cloglog':
+            return np.log(-np.log(1 - mu))
+        return np.log(mu / (1 - mu))  # default to logit
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Starting mu for Binomial: (y + 0.5) / 2, clipped to (0.01, 0.99)."""
+        return np.clip((y + 0.5) / 2.0, 0.01, 0.99)
+
     def dmu_deta(self, eta: np.ndarray) -> np.ndarray:
         """Derivative of inverse link: dμ/dη."""
         if self.link == 'logit':
@@ -314,8 +363,8 @@ class BinomialFamily(Family):
             mu = self.linkinv(eta)
             return mu * (1 - mu)
         elif self.link == 'probit':
-            # d/dη[Φ(η)] = φ(η) = exp(-η²/2)/√(2π)
-            return special.ndtr(eta, derivative=True)
+            # d/dη[Φ(η)] = φ(η) = standard normal PDF
+            return np.exp(-0.5 * eta ** 2) / np.sqrt(2 * np.pi)
         elif self.link == 'cloglog':
             # d/dη[1 - exp(-exp(η))] = exp(η - exp(η))
             return np.exp(eta - np.exp(np.clip(eta, -500, 500)))
@@ -382,6 +431,14 @@ class NegativeBinomialFamily(Family):
         """Variance = μ + μ²/θ."""
         return mu + mu**2 / self.theta
 
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Log link: η = log(μ)."""
+        return np.log(np.maximum(mu, 1e-300))
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Starting mu for NegBin: max(y, 0.1)."""
+        return np.maximum(y, 0.0) + 0.1
+
     def loglik(
         self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
     ) -> float:
@@ -442,6 +499,15 @@ class InverseGaussianFamily(Family):
         # Clip eta to avoid numerical issues
         eta_safe = np.maximum(eta, 1e-10)
         return 1.0 / np.sqrt(eta_safe)
+
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        """Inverse square link: η = 1/μ²."""
+        return 1.0 / np.maximum(mu, 1e-300) ** 2
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        """Starting mu for InverseGaussian: (y + mean(y)) / 2, strictly positive."""
+        mu_bar = float(np.mean(y[y > 0])) if np.any(y > 0) else 1.0
+        return np.maximum((y + mu_bar) / 2.0, 1e-6)
 
     def dmu_deta(self, eta: np.ndarray) -> np.ndarray:
         """Derivative: dμ/dη = -1/(2η^(3/2))."""

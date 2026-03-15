@@ -135,7 +135,7 @@ class REMLObjective:
             ∂REML/∂(log λⱼ) = ∂REML/∂λⱼ * λⱼ
 
         where:
-            ∂REML/∂λⱼ = -1/2 [ trace(P Sⱼ) + y^T P Sⱼ P y ]
+            ∂REML/∂λⱼ = -1/2 [ trace(P Sⱼ) + (Xβ)^T P Sⱼ P (Xβ) ]
 
         Args:
             beta: Fitted coefficients.
@@ -144,48 +144,39 @@ class REMLObjective:
         Returns:
             Gradient vector, shape (n_smooth,).
         """
-        lambda_vec = np.exp(log_lambda)
-
-        # Construct combined penalty
-        S_combined = self._construct_combined_penalty(lambda_vec)
-
-        # Get weight matrix
-        eta = self.X @ beta + self.offset
-        mu = self.family.linkinv(eta)
-        dmu_deta = self.family.dmu_deta(eta)
-        var_mu = self.family.variance(mu, self.dispersion)
-        
-        w = (dmu_deta**2) / var_mu
-        
-        # X^T W X + S
-        XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-        A = XtWX + S_combined
-
-        # Compute precision P = A^{-1}
         try:
-            P = linalg.inv(A)
-        except linalg.LinAlgError:
+            lambda_vec = np.exp(log_lambda)
+
+            S_combined = self._construct_combined_penalty(lambda_vec)
+
+            eta = self.X @ beta + self.offset
+            mu = self.family.linkinv(eta)
+            dmu_deta = self.family.dmu_deta(eta)
+            var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
+
+            w = np.clip((dmu_deta ** 2) / var_mu, 0, 1e10)
+
+            XtWX = self.X.T @ (self.X * w[:, np.newaxis])
+            A = XtWX + S_combined + 1e-6 * np.eye(self.p)  # Ridge for stability
+
+            P = linalg.pinv(A)  # pseudo-inverse handles near-singular A
+
+            # Use fitted linear predictor (p-dimensional) not y (n-dimensional)
+            Xbeta = self.X @ beta  # (n,) projected version via X^T
+            Px = P @ (self.X.T @ (w * Xbeta))  # (p,)
+
+            grad_log_lambda = np.zeros(self.n_smooth)
+
+            for j, S_j in enumerate(self.S_list):
+                PS_j = P @ S_j
+                trace_PSj = np.trace(PS_j)
+                quad_term = Xbeta @ (self.X @ (PS_j @ (self.X.T @ (w * Xbeta))))
+                grad_lambdaj = -0.5 * (trace_PSj + quad_term)
+                grad_log_lambda[j] = grad_lambdaj * lambda_vec[j]
+
+            return grad_log_lambda
+        except Exception:
             return np.full(self.n_smooth, np.nan)
-
-        # Compute gradients
-        grad_log_lambda = np.zeros(self.n_smooth)
-        
-        for j, S_j in enumerate(self.S_list):
-            # Trace term: trace(P S_j)
-            PS_j = P @ S_j
-            trace_PSj = np.trace(PS_j)
-            
-            # Quadratic term: y^T P S_j P y
-            Py = P @ self.y
-            quad_term = self.y @ (P @ (S_j @ Py))
-            
-            # Gradient w.r.t. λⱼ
-            grad_lambdaj = -0.5 * (trace_PSj + quad_term)
-            
-            # Chain rule: ∂f/∂(log λⱼ) = ∂f/∂λⱼ * λⱼ
-            grad_log_lambda[j] = grad_lambdaj * lambda_vec[j]
-
-        return grad_log_lambda
 
     def hessian_wrt_log_lambda(
         self, beta: np.ndarray, log_lambda: np.ndarray
@@ -201,33 +192,50 @@ class REMLObjective:
         Returns:
             Hessian matrix, shape (n_smooth, n_smooth).
         """
-        lambda_vec = np.exp(log_lambda)
-
-        # Construct combined penalty
-        S_combined = self._construct_combined_penalty(lambda_vec)
-
-        # Get weight matrix
-        eta = self.X @ beta + self.offset
-        mu = self.family.linkinv(eta)
-        dmu_deta = self.family.dmu_deta(eta)
-        var_mu = self.family.variance(mu, self.dispersion)
-        
-        w = (dmu_deta**2) / var_mu
-        
-        # X^T W X + S
-        XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-        A = XtWX + S_combined
-
-        # Compute precision P = A^{-1}
         try:
-            P = linalg.inv(A)
-        except linalg.LinAlgError:
-            return np.full((self.n_smooth, self.n_smooth), np.nan)
+            lambda_vec = np.exp(log_lambda)
 
-        # Compute Hessian
-        H = np.zeros((self.n_smooth, self.n_smooth))
-        Py = P @ self.y
-        
+            S_combined = self._construct_combined_penalty(lambda_vec)
+
+            eta = self.X @ beta + self.offset
+            mu = self.family.linkinv(eta)
+            dmu_deta = self.family.dmu_deta(eta)
+            var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
+
+            w = np.clip((dmu_deta ** 2) / var_mu, 0, 1e10)
+
+            XtWX = self.X.T @ (self.X * w[:, np.newaxis])
+            A = XtWX + S_combined + 1e-6 * np.eye(self.p)  # Ridge for stability
+
+            P = linalg.pinv(A)
+
+            # Use fitted values instead of raw y to avoid dimension mismatch
+            Xbeta = self.X @ beta  # (n,)
+            Py_proxy = P @ (self.X.T @ (w * Xbeta))  # (p,) coefficient-space proxy
+
+            H = np.zeros((self.n_smooth, self.n_smooth))
+
+            for j in range(self.n_smooth):
+                for k in range(j, self.n_smooth):
+                    S_j = self.S_list[j]
+                    S_k = self.S_list[k]
+
+                    PS_j = P @ S_j
+                    PS_k = P @ S_k
+
+                    trace1 = np.trace(PS_j @ PS_k)
+
+                    PSk_Py = P @ (S_k @ Py_proxy)
+                    quad1 = Py_proxy @ (S_j @ PSk_Py)
+
+                    h_jk = 0.5 * (trace1 + quad1) * lambda_vec[j] * lambda_vec[k]
+
+                    H[j, k] = h_jk
+                    H[k, j] = h_jk
+
+            return H
+        except Exception:
+            return np.full((self.n_smooth, self.n_smooth), np.nan)
         for j in range(self.n_smooth):
             for k in range(j, self.n_smooth):
                 S_j = self.S_list[j]

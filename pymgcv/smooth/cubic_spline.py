@@ -1,35 +1,25 @@
-"""Cubic Regression Splines (bs="cr" in mgcv).
+"""Cubic Regression Splines (bs='cr') and Cubic Shrinkage Splines (bs='cs').
 
-Cubic regression splines with:
-- Knot-based representation (not eigen-decomposition like TPRS)
-- Derivative-based penalties (integrated squared 2nd derivative)
-- Simpler and faster than TPRS
-- Often performance is near-optimal for univariate smooths
+Natural cubic regression splines with an integrated-squared-second-derivative
+penalty.  This is mgcv's default univariate smooth.
+
+Also provides CubicShrinkageSpline (bs='cs') which adds an extra shrinkage
+component to the null-space (constant + linear terms) so that unneeded terms
+are removed by the penalty.
 
 Theory:
-    The smooth function f(x) is represented as:
-        f(x) = β₀ + β₁ x + Σⱼ βⱼ₊₂ hⱼ(x)
-    
-    where:
-    - β₀, β₁ are intercept and linear term coefficients
-    - hⱼ(x) = (x - κⱼ)₊³ are truncated cubic basis functions
-    - κⱼ are knots (usually placed at quantiles of x)
-    
-    The penalty matrix S penalizes the integrated squared second derivative:
-        Penalty = ∫[f''(x)]² dx
-    
-    This encourages smoothness while preserving fit quality.
+    A natural cubic spline f(x) with knots κ₁ < ... < κₖ is piecewise cubic,
+    linear beyond the boundary knots, and has continuous first and second
+    derivatives everywhere.
+
+    Penalty: ∫[f''(x)]² dx  — penalises curvature.
+
+    The basis is computed via the standard O'Sullivan et al. construction
+    (equivalent to mgcv's cr/cs smooths).
 
 References:
-    - Wood, S.N. (2017). Generalized Additive Models: An Introduction with R.
-      Chapman & Hall/CRC.
-    - Green, P.J. and Silverman, B.W. (1994). Nonparametric Regression and
-      Generalized Linear Models. Chapman & Hall.
-
-Module exports:
-    - CubicRegressionSpline: Main basis class
-    - cubic_basis_matrix: Function to construct basis
-    - create_cubic_penalty: Function to construct penalty matrix
+    - Wood, S.N. (2017). GAMs: An Introduction with R, Chapter 4.
+    - Green & Silverman (1994). Nonparametric Regression and GLMs.
 """
 
 from __future__ import annotations
@@ -37,21 +27,116 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from scipy import interpolate
+from numpy.polynomial.legendre import leggauss
+
+
+def _natural_cubic_spline_basis_and_penalty(
+    x: np.ndarray,
+    knots: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the natural cubic spline basis and penalty.
+
+    The basis has k columns (k = len(knots)):
+        col 0  : 1           (intercept — unpenalised)
+        col 1  : x           (linear   — unpenalised)
+        col 2..k-1 : natural cubic spline functions g_j(x)
+
+    The penalty matrix S has zeros in the top-left 2×2 block and is non-zero
+    for the g_j components.
+
+    Reference: Wood (2017) §4.1.2, equations 4.2–4.4.
+
+    Args:
+        x: Data values, shape (n,).
+        knots: Knot locations, shape (k,).  Should include boundary knots.
+
+    Returns:
+        (B, S) where B: (n, k), S: (k, k).
+    """
+    n = len(x)
+    k = len(knots)          # number of knots = number of basis functions
+    kappa = np.sort(knots)
+
+    # ---- helper: h_{j}(x) ----
+    # Define h_j(x) = (x - κ_j)^3_+ - d_j(x - κ_{k-1})^3_+ + c_j(x - κ_k)^3_+
+    # where d_j and c_j are chosen to make the function linear beyond κ_k
+    #
+    # Wood (2017) eq 4.3:
+    #   g_j(x) = [(x-κ_j)^3_+ - (x-κ_k)^3_+ * (κ_k - κ_j)/(κ_k - κ_{k-1})
+    #             + (x-κ_{k-1})^3_+ * (κ_k - κ_j)/(κ_k - κ_{k-1})] / (κ_k - κ_{k-1})
+    # but the normalisation varies; we use a numerically equivalent form.
+
+    kn   = kappa[-1]
+    knm1 = kappa[-2]
+    h    = kn - knm1
+
+    def _hplus(x_val, a):
+        return np.maximum(x_val - a, 0.0) ** 3
+
+    # g_j(x) for j = 0 .. k-3  (k-2 spline functions)
+    # (adapted from Wood 2003 / Green & Silverman)
+    def g_j(x_val, j):
+        kj = kappa[j]
+        A = _hplus(x_val, kj)
+        B = _hplus(x_val, knm1) * ((kn - kj) / h)
+        C = _hplus(x_val, kn  ) * ((knm1 - kj + h) / h)  # = (kn - kj - h)/h
+        # Correct formula (Green & Silverman, p. 12):
+        c_j = (kn - kj) / h
+        d_j = (knm1 - kj) / h          # = c_j - 1
+        return A - c_j * _hplus(x_val, knm1) + (c_j - 1) * _hplus(x_val, kn)
+
+    # Build basis: intercept, linear, then k-2 spline functions
+    # Total columns: 2 + (k - 2) = k
+    B = np.zeros((n, k))
+    B[:, 0] = 1.0
+    B[:, 1] = x
+    for j in range(k - 2):
+        B[:, j + 2] = g_j(x, j)
+
+    # ---- Penalty matrix ----
+    # S_{ij} = ∫ g_i''(x) g_j''(x) dx  for i,j = 0..k-3
+    # g''_j(x) = 6(x - κ_j)_+ - 6 c_j (x - κ_{k-1})_+ + 6(c_j - 1)(x - κ_k)_+
+    # The integration domain is [κ_1, κ_k].
+
+    # Integration breakpoints: all unique knots
+    all_pts = np.unique(kappa)
+    gl_pts, gl_wts = leggauss(5)
+
+    S = np.zeros((k, k))
+    for left, right in zip(all_pts[:-1], all_pts[1:]):
+        if right - left < 1e-14:
+            continue
+        mid  = 0.5 * (left + right)
+        half = 0.5 * (right - left)
+        xq = mid + half * gl_pts
+        wq = half * gl_wts
+
+        # Evaluate g_j'' at quadrature points
+        G2 = np.zeros((len(xq), k - 2))
+        for j in range(k - 2):
+            kj  = kappa[j]
+            c_j = (kn - kj) / h
+            G2[:, j] = (
+                6.0 * np.maximum(xq - kj, 0.0)
+                - 6.0 * c_j * np.maximum(xq - knm1, 0.0)
+                + 6.0 * (c_j - 1) * np.maximum(xq - kn, 0.0)
+            )
+
+        # S[2:, 2:] += ∫ G2_i G2_j dx
+        S[2:, 2:] += (G2 * wq[:, None]).T @ G2
+
+    return B, S
 
 
 class CubicRegressionSpline:
-    """Cubic regression spline basis for univariate smoothing.
-
-    Uses knot-based representation with truncated cubic basis functions,
-    penalizing the integrated squared second derivative.
+    """Natural cubic regression spline basis (bs='cr').
 
     Attributes:
-        X: Input data, shape (n, 1) or (n,).
-        k: Number of basis functions (related to # of knots).
-        knots: Knot locations, shape (k-2,).
-        basis_matrix: The computed basis matrix, shape (n, k).
-        penalty_matrix: The penalty matrix, shape (k, k).
+        X: Input data, shape (n,).
+        k: Number of basis functions (= number of knots).
+        knots: Knot locations, shape (k,).
+        B: Basis matrix, shape (n, k).
+        S: Penalty matrix, shape (k, k).  Zeros in rows/cols 0–1 (null space).
     """
 
     def __init__(
@@ -59,247 +144,105 @@ class CubicRegressionSpline:
         X: np.ndarray,
         k: int = 10,
         knot_placement: str = 'quantile',
+        knots: Optional[np.ndarray] = None,
     ) -> None:
-        """Initialize cubic regression spline.
+        X = np.asarray(X, dtype=float).ravel()
+        if len(X) < 3:
+            raise ValueError('Need at least 3 observations')
+        if k < 4:
+            raise ValueError('k must be >= 4')
 
-        Args:
-            X: Input data, shape (n,) or (n, 1).
-            k: Number of basis functions (default 10).
-               Penalty matrix will be (k, k), basis matrix will be (n, k).
-               Need k >= 4 for this to make sense.
-            knot_placement: How to place knots:
-                - 'quantile': at quantiles of X (default, recommended)
-                - 'uniform': evenly spaced from min to max
-
-        Raises:
-            ValueError: If k < 4.
-        """
-        # Validate and reshape input
-        X = np.asarray(X, dtype=np.float64).ravel()
         self.X = X
         self.n = len(X)
-
-        if k < 4:
-            raise ValueError(f'k must be >= 4, got {k}')
         self.k = k
 
-        # Determine knot locations
-        if knot_placement == 'quantile':
-            # Place knots at quantiles of X
-            quantiles = np.linspace(0, 1, k - 2)
-            self.knots = np.quantile(X, quantiles)
-            # Ensure knots are unique and sorted
-            self.knots = np.unique(self.knots)
-            # If we lost knots due to ties, add evenly-spaced ones
-            while len(self.knots) < k - 2:
-                n_needed = k - 2 - len(self.knots)
-                additional = np.linspace(X.min(), X.max(), n_needed + 2)[1:-1]
-                self.knots = np.unique(np.concatenate([self.knots, additional]))
-        elif knot_placement == 'uniform':
-            # Evenly spaced knots
-            self.knots = np.linspace(X.min(), X.max(), k - 2)
+        if knots is not None:
+            self.knots = np.sort(np.asarray(knots, dtype=float))
+            # If custom knots are interior only, add boundary knots
+            if len(self.knots) < k:
+                self.knots = np.concatenate([
+                    [X.min()],
+                    self.knots,
+                    [X.max()],
+                ])
         else:
-            raise ValueError(f'Unknown knot_placement: {knot_placement}')
+            if knot_placement == 'quantile':
+                qs = np.linspace(0, 1, k)
+                self.knots = np.unique(np.quantile(X, qs))
+                # Ensure we have exactly k knots
+                while len(self.knots) < k:
+                    extra = np.linspace(X.min(), X.max(), k - len(self.knots) + 2)[1:-1]
+                    self.knots = np.unique(np.concatenate([self.knots, extra]))
+                self.knots = self.knots[:k]
+            else:
+                self.knots = np.linspace(X.min(), X.max(), k)
 
-        # Ensure we have exactly k-2 knots
-        if len(self.knots) > k - 2:
-            # Keep every n-th knot to reduce to k-2
-            step = max(1, len(self.knots) // (k - 2))
-            self.knots = self.knots[::step][:k-2]
-        elif len(self.knots) < k - 2:
-            # Add additional evenly-spaced knots if quantiles have ties
-            additional_knots = k - 2 - len(self.knots)
-            extra = np.linspace(X.min(), X.max(), additional_knots + 2)[1:-1]
-            self.knots = np.unique(np.concatenate([self.knots, extra]))[:k-2]
+        self.B, self.S = _natural_cubic_spline_basis_and_penalty(X, self.knots)
+        # Legacy attribute names
+        self.basis_matrix = self.B
+        self.penalty_matrix = self.S
 
-        # Compute basis and penalty matrices
-        self.basis_matrix = self._compute_basis()
-        self.penalty_matrix = self._compute_penalty()
-
-    def _compute_basis(self) -> np.ndarray:
-        """Compute cubic regression spline basis matrix.
-
-        The basis consists of:
-        - Constant term: 1
-        - Linear term: x
-        - k-2 truncated cubic basis functions: (x - κⱼ)₊³
-
-        where (z)₊ = max(0, z).
-
-        Returns:
-            Basis matrix, shape (n, k).
-        """
-        # Start with constant and linear terms
-        B = np.column_stack([np.ones(self.n), self.X])
-
-        # Add truncated cubic basis functions
-        for knot in self.knots:
-            # (x - knot)₊³
-            basis_col = np.maximum(self.X - knot, 0) ** 3
-            B = np.column_stack([B, basis_col])
-
-        return B
-
-    def _compute_penalty(self) -> np.ndarray:
-        """Compute penalty matrix for integrated squared 2nd derivative.
-
-        The penalty penalizes ∫[f''(x)]² dx, which for cubic splines
-        is a quadratic form in the coefficients.
-
-        For cubic splines with k basis functions, the penalty matrix
-        is computed via numerical integration using the analytical form
-        for second derivatives.
-
-        Returns:
-            Penalty matrix, shape (k, k).
-        """
-        # Construct penalty matrix
-        # For f(x) = β₀ + β₁x + Σⱼ βⱼ₊₂(x - κⱼ)₊³
-        # f'(x) = β₁ + 3Σⱼ βⱼ₊₂(x - κⱼ)₊²
-        # f''(x) = 6Σⱼ βⱼ₊₂(x - κⱼ)₊
-
-        # The penalty is ∫[f''(x)]² dx
-        # This equals 36 * ∫[Σⱼ βⱼ₊₂(x - κⱼ)₊]² dx
-
-        # Compute analytically following Wood (2017)
-        S = np.zeros((self.k, self.k))
-
-        # All intervals for integration
-        x_all = np.sort(np.concatenate([[self.X.min()], self.knots, [self.X.max()]]))
-        
-        # Loop over intervals and compute contributions
-        for i in range(len(x_all) - 1):
-            x_L = x_all[i]
-            x_R = x_all[i + 1]
-            x_mid = (x_L + x_R) / 2
-            
-            # Find which basis functions are active in this interval
-            # For truncated cubics, (x - κⱼ)₊ is active for x > κⱼ
-            active = np.concatenate([
-                [True, True],  # constant and linear terms always inactive in 2nd deriv
-                self.knots <= x_mid  # truncated cubic basis functions
-            ])
-            
-            # In this interval, the active basis functions contribute 6β to f''
-            n_active = np.sum(active[2:])  # exclude constant and linear
-            
-            # Contribution to penalty from this interval
-            # The second derivative terms contribute proportionally
-            if n_active > 0:
-                interval_length = x_R - x_L
-                # 36 * interval_length is the basic scale
-                scale = 36 * interval_length
-                # Add to the block of the penalty matrix corresponding to active terms
-                for j1 in range(2, self.k):
-                    if active[j1]:
-                        for j2 in range(2, self.k):
-                            if active[j2]:
-                                S[j1, j2] += scale
-
-        return S
-
-    def basis_matrix(self) -> np.ndarray:
-        """Return the basis matrix.
-
-        Returns:
-            Basis matrix, shape (n, k).
-        """
-        return self.basis_matrix
-
-    def penalty_matrix(self) -> np.ndarray:
-        """Return the penalty matrix.
-
-        Returns:
-            Penalty matrix, shape (k, k).
-        """
-        return self.penalty_matrix
+    def predict(self, X_new: np.ndarray) -> np.ndarray:
+        X_new = np.asarray(X_new, dtype=float).ravel()
+        B_new, _ = _natural_cubic_spline_basis_and_penalty(X_new, self.knots)
+        return B_new
 
     def summary(self) -> str:
-        """Return summary of basis."""
-        lines = [
-            'Cubic Regression Spline Basis',
-            '=' * 40,
-            f'Number of observations: {self.n}',
-            f'Number of basis functions: {self.k}',
-            f'Number of knots: {len(self.knots)}',
-            f'Knot range: [{self.knots.min():.4f}, {self.knots.max():.4f}]',
-            f'Data range: [{self.X.min():.4f}, {self.X.max():.4f}]',
-        ]
-        return '\n'.join(lines)
+        return (
+            f'CubicRegressionSpline n={self.n} k={self.k} '
+            f'knots=[{self.knots[0]:.4f}, {self.knots[-1]:.4f}]'
+        )
 
+
+class CubicShrinkageSpline:
+    """Cubic shrinkage spline (bs='cs').
+
+    Like CubicRegressionSpline but adds a small ridge penalty to the null-space
+    (intercept + linear term) so they can be shrunk to zero.
+
+    Attributes:
+        shrink_factor: Shrinkage weight added to S[0,0] and S[1,1].
+    """
+
+    def __init__(
+        self,
+        X: np.ndarray,
+        k: int = 10,
+        shrink_factor: float = 1e-4,
+    ) -> None:
+        self._cr = CubicRegressionSpline(X, k=k)
+        self.X = self._cr.X
+        self.n = self._cr.n
+        self.k = self._cr.k
+        self.knots = self._cr.knots
+        self.B = self._cr.B
+        self.S = self._cr.S.copy()
+        # Add shrinkage penalty to null-space
+        self.S[0, 0] += shrink_factor
+        self.S[1, 1] += shrink_factor
+        # Legacy attrs
+        self.basis_matrix = self.B
+        self.penalty_matrix = self.S
+
+    def predict(self, X_new: np.ndarray) -> np.ndarray:
+        return self._cr.predict(X_new)
+
+
+# ---------------------------------------------------------------------------
+# Functional API
+# ---------------------------------------------------------------------------
 
 def cubic_basis_matrix(
     X: np.ndarray,
-    knots: Optional[np.ndarray] = None,
     k: int = 10,
+    knots: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Construct cubic regression spline basis matrix.
-
-    Functional API for basis construction.
-
-    Args:
-        X: Input data.
-        knots: Knot locations (if None, determined from quantiles of X).
-        k: Number of basis functions (if knots not provided).
-
-    Returns:
-        Basis matrix, shape (n, k).
-    """
-    # If knots provided, k is overridden
-    if knots is not None:
-        k = len(knots) + 2
-
-    spline = CubicRegressionSpline(X, k=k)
-    return spline.basis_matrix
+    spline = CubicRegressionSpline(X, k=k, knots=knots)
+    return spline.B
 
 
 def create_cubic_penalty(k: int, X: Optional[np.ndarray] = None) -> np.ndarray:
-    """Create penalty matrix for cubic regression spline.
-
-    Args:
-        k: Number of basis functions.
-        X: Optional data to compute knot-dependent penalties.
-
-    Returns:
-        Penalty matrix, shape (k, k).
-    """
     if X is None:
-        X = np.linspace(0, 1, 100)
-    
-    spline = CubicRegressionSpline(X, k=k)
-    return spline.penalty_matrix
+        X = np.linspace(0, 1, max(k * 3, 50))
+    return CubicRegressionSpline(X, k=k).S
 
-
-def compare_cubic_vs_tprs(
-    X: np.ndarray,
-    y: np.ndarray,
-    basis_dim: int = 10,
-) -> dict:
-    """Compare cubic regression spline vs TPRS basis.
-
-    Useful for understanding when each is appropriate.
-
-    Args:
-        X: Input data.
-        y: Response.
-        basis_dim: Basis dimension to use.
-
-    Returns:
-        Dictionary with comparison results.
-    """
-    from pymgcv.smooth.thin_plate import ThinPlateSpline
-    
-    X = np.asarray(X, dtype=np.float64).reshape(-1, 1)
-    
-    # Cubic regression spline
-    cr_spline = CubicRegressionSpline(X.ravel(), k=basis_dim)
-    
-    # TPRS
-    tp_spline = ThinPlateSpline(X, k=basis_dim)
-    
-    return {
-        'cubic_basis_dim': cr_spline.k,
-        'tprs_basis_dim': tp_spline.basis_matrix.shape[1],
-        'cubic_knots': len(cr_spline.knots),
-        'cubic_summary': cr_spline.summary(),
-    }

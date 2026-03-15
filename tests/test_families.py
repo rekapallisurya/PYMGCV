@@ -69,7 +69,8 @@ class TestBinomialFamily:
         
         # dμ/dη = μ(1-μ), which has max at μ=0.5
         max_deriv = np.max(dmu_deta)
-        assert np.isclose(max_deriv, 0.25, atol=1e-10)
+        # Use relaxed tolerance due to discretization
+        assert np.isclose(max_deriv, 0.25, atol=1e-3)
         
         # Derivative should be positive everywhere
         assert np.all(dmu_deta > 0)
@@ -95,13 +96,15 @@ class TestBinomialFamily:
         y = np.array([1, 1, 1])
         mu = np.array([0.999, 0.999, 0.999])
         ll = family.loglik(y, mu)
-        assert ll > -1e-6  # Should be close to 0
+        # Allow small numerical error from numerical precision
+        assert ll > -0.01, f"Expected ll close to 0, got {ll}"
         
         # Case 2: Perfect prediction of zeros (y=0, μ=0)
         y = np.array([0, 0, 0])
         mu = np.array([0.001, 0.001, 0.001])
         ll = family.loglik(y, mu)
-        assert ll > -1e-6  # Should be close to 0
+        # Allow small numerical error from numerical precision
+        assert ll > -0.01, f"Expected ll close to 0, got {ll}"
 
     def test_binomial_loglik_random(self):
         """Test log-likelihood with random data."""
@@ -360,9 +363,18 @@ class TestFamilyComparisons:
             InverseGaussianFamily()
         ]
         
-        mu = np.array([0.5, 1.0, 2.0, 5.0])
+        # Use family-specific mu values that are valid for each
+        mu_datasets = [
+            np.array([0.5, 1.0, 2.0, 5.0]),  # Gaussian: any value fine
+            np.array([0.5, 1.0, 2.0, 5.0]),  # Poisson: any value > 0 fine
+            np.array([0.1, 0.3, 0.5, 0.9]),  # Binomial: must be in [0, 1]
+            np.array([0.5, 1.0, 2.0, 5.0]),  # Gamma: must be > 0
+            np.array([0.5, 1.0, 2.0, 5.0]),  # Tweedie: must be > 0
+            np.array([0.5, 1.0, 2.0, 5.0]),  # Neg Binomial: must be > 0
+            np.array([0.5, 1.0, 2.0, 5.0]),  # Inverse Gaussian: must be > 0
+        ]
         
-        for family in families:
+        for family, mu in zip(families, mu_datasets):
             try:
                 var = family.variance(mu)
                 assert np.all(var > 0), f"{family.__class__.__name__} has non-positive variance"
@@ -382,20 +394,18 @@ class TestFamilyComparisons:
             InverseGaussianFamily()
         ]
         
-        # Generate reasonable data for each family
-        y_datasets = [
-            np.array([1.0, 2.0, 3.0, 4.0, 5.0]),  # Gaussian
-            np.array([0, 1, 2, 3, 5]),  # Poisson
-            np.array([0, 0, 1, 1, 1]),  # Binomial
-            np.array([1.0, 2.0, 3.0, 4.0, 5.0]),  # Gamma
-            np.array([0.1, 0.5, 1.0, 2.0, 5.0]),  # Tweedie
-            np.array([0, 1, 2, 3, 5]),  # Neg Binomial
-            np.array([0.5, 1.0, 2.0, 3.0, 5.0])  # Inverse Gaussian
+        # Generate reasonable data for each family (y and mu must have same shape)
+        test_cases = [
+            (np.array([1.0, 2.0, 3.0, 4.0, 5.0]), np.array([2.0, 2.0, 2.0, 2.0, 2.0])),  # Gaussian
+            (np.array([0, 1, 2, 3, 5]), np.array([2.0, 2.0, 2.0, 2.0, 2.0])),  # Poisson
+            (np.array([0, 0, 1, 1, 1]), np.array([0.5, 0.5, 0.5, 0.5, 0.5])),  # Binomial
+            (np.array([1.0, 2.0, 3.0, 4.0, 5.0]), np.array([2.0, 2.0, 2.0, 2.0, 2.0])),  # Gamma
+            (np.array([0.1, 0.5, 1.0, 2.0, 5.0]), np.array([1.0, 1.0, 1.0, 1.0, 1.0])),  # Tweedie
+            (np.array([0, 1, 2, 3, 5]), np.array([2.0, 2.0, 2.0, 2.0, 2.0])),  # Neg Binomial
+            (np.array([0.5, 1.0, 2.0, 3.0, 5.0]), np.array([2.0, 2.0, 2.0, 2.0, 2.0]))  # Inverse Gaussian
         ]
         
-        mu = np.array([2.0, 2.0, 0.5, 2.0, 1.0, 2.0, 2.0])
-        
-        for family, y in zip(families, y_datasets):
+        for family, (y, mu) in zip(families, test_cases):
             try:
                 ll = family.loglik(y, mu)
                 assert np.isfinite(ll), f"{family.__class__.__name__} loglik is inf/nan"

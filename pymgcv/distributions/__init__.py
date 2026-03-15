@@ -1,3 +1,12 @@
 """Exponential family distributions: Gaussian, Poisson, Gamma, Tweedie."""
 
-from __future__ import annotations
+
+from .family_base import (
+	GaussianFamily,
+	PoissonFamily,
+	BinomialFamily,
+	GammaFamily,
+	TweedieFamily,
+	NegativeBinomialFamily,
+	InverseGaussianFamily,
+)

@@ -41,6 +41,7 @@ class GAM:
         data: Optional[pd.DataFrame] = None,
         family: str = 'gaussian',
         offset: Optional[str] = None,
+        weights: Optional[Any] = None,
     ) -> None:
         """Initialize GAM.
 
@@ -49,6 +50,7 @@ class GAM:
             data: Input data as DataFrame (optional, can be passed to fit()).
             family: Distribution family ('gaussian', 'poisson', 'gamma', 'tweedie').
             offset: Column name for offset vector.
+            weights: Column name (str) or array of observation weights.
 
         Raises:
             ValueError: If formula or family invalid.
@@ -56,8 +58,9 @@ class GAM:
         self.formula = formula
         self.data = data
         self.family_name = family
+        self.weights_col = weights
 
-        # Initialize components (TODO)
+        # Fitted attributes
         self.model_matrix = None
         self.family = None
         self.pirls_solver = None
@@ -68,6 +71,10 @@ class GAM:
         self.smoothing_parameters: Optional[np.ndarray] = None
         self.edf: Optional[float] = None
         self.edf_per_smooth: Optional[dict] = None
+        self.dispersion_: float = 1.0      # estimated dispersion φ
+        self._S_combined: Optional[np.ndarray] = None  # for inference
+        self._X_fit: Optional[np.ndarray] = None       # training design matrix
+        self._y_fit: Optional[np.ndarray] = None       # training response
 
     def fit(
         self,
@@ -76,7 +83,7 @@ class GAM:
         max_inner_iter: int = 25,
         verbose: bool = False,
         use_gpu: bool = True,
-    ) -> GAM:
+    ) -> 'GAM':
         """Fit the GAM model.
 
         Args:
@@ -89,7 +96,6 @@ class GAM:
         Returns:
             Self (for method chaining).
         """
-        # Use provided data or fall back to initialization data
         if data is not None:
             self.data = data
         elif self.data is None:
@@ -105,17 +111,22 @@ class GAM:
         from pymgcv.optimizer.magic_optimizer import MAGICOptimizer
         from pymgcv.optimizer.edf import EDFComputer
         from pymgcv.optimizer.jax_acceleration import device_info
-        
+
         # 1. Parse formula
         parser = FormulaParser(self.formula)
-        
+
         # 2. Construct design matrix
         self.model_matrix = ModelMatrix(self.data, self.formula)
         X = self.model_matrix.X
         y = self.model_matrix.response_vector()
         offset = self.model_matrix.offset_vector()
-        
-        # 3. Set up family
+        self._X_fit = X
+        self._y_fit = y
+
+        # 3. Load observation weights
+        weights = self._load_weights(self.data, len(y))
+
+        # 4. Set up family
         family_map = {
             'gaussian': GaussianFamily(),
             'poisson': PoissonFamily(),
@@ -126,100 +137,258 @@ class GAM:
             'inverse.gaussian': InverseGaussianFamily(),
         }
         self.family = family_map.get(self.family_name, GaussianFamily())
-        
-        # 4. Build penalty matrices for each smooth term
-        smooth_specs = parser.smooth_terms
+
+        # 5. Build penalty matrices
+        # For tensor product smooths, each smooth contributes multiple penalties.
+        p_total = X.shape[1]
         S_list = []
         smooth_starts = []
         smooth_sizes = []
-        
-        # Get starting column index for smooth terms
-        if self.model_matrix.param_indices is not None:
-            col_idx = self.model_matrix.param_indices.stop
-        else:
-            col_idx = 0
-        
-        for smooth_spec in smooth_specs:
-            # Get basis dimension from smooth specification
-            basis_dim = smooth_spec.k if smooth_spec.k is not None else 10
-            
-            # Get the smooth basis object from the model matrix
-            if len(self.model_matrix.smooth_bases) > len(smooth_starts):
-                basis_obj = self.model_matrix.smooth_bases[len(smooth_starts)]
-                
-                # Construct penalty matrix for this smooth (Demmler-Reinsch by default)
-                from pymgcv.penalties.penalty_matrix import PenaltyMatrix
-                penalty_builder = PenaltyMatrix(basis_type='tprs')
-                S_j = penalty_builder.construct(basis_obj.X, k=basis_dim)
-                S_list.append(S_j)
+
+        for j, smooth_spec in enumerate(parser.smooth_terms):
+            if j >= len(self.model_matrix.smooth_bases):
+                S_list.append(np.zeros((p_total, p_total)))
+                smooth_starts.append(0)
+                smooth_sizes.append(10)
+                continue
+
+            smooth_slice = self.model_matrix.smooth_indices[j]
+            s_start = smooth_slice.start
+            s_stop = smooth_slice.stop
+            actual_basis_dim = s_stop - s_start
+            basis_obj = self.model_matrix.smooth_bases[j]
+
+            # Tensor product smooths have multiple (Kronecker-sum) penalties
+            if hasattr(basis_obj, 'penalty_matrices'):
+                for P_small in basis_obj.penalty_matrices():
+                    P_embed = np.zeros((p_total, p_total))
+                    P_embed[s_start:s_stop, s_start:s_stop] = P_small
+                    S_list.append(P_embed)
+                    smooth_starts.append(s_start)
+                    smooth_sizes.append(actual_basis_dim)
+            elif hasattr(basis_obj, 'S'):
+                # Random effect or cyclic spline: use .S directly
+                P_embed = np.zeros((p_total, p_total))
+                P_embed[s_start:s_stop, s_start:s_stop] = basis_obj.S
+                S_list.append(P_embed)
+                smooth_starts.append(s_start)
+                smooth_sizes.append(actual_basis_dim)
             else:
-                # Fallback: zero penalty matrix
-                S_list.append(np.zeros((basis_dim, basis_dim)))
-            
-            smooth_starts.append(col_idx)
-            smooth_sizes.append(basis_dim)
-            col_idx += basis_dim
-        
-        # 5. Optimize smoothing parameters via MAGIC
-        # Set initial dispersion (1.0 for Gaussian, estimated for others)
-        initial_dispersion = 1.0 if self.family_name == 'gaussian' else 1.0
-        
+                # Default: second-difference TPRS penalty
+                penalty_builder = PenaltyMatrix(basis_dim=actual_basis_dim, penalty_type='tprs')
+                P_embed = np.zeros((p_total, p_total))
+                P_embed[s_start:s_stop, s_start:s_stop] = penalty_builder.S
+                S_list.append(P_embed)
+                smooth_starts.append(s_start)
+                smooth_sizes.append(actual_basis_dim)
+
+        if not S_list:
+            S_list = [np.zeros((p_total, p_total))]
+            smooth_starts = [0]
+            smooth_sizes = [p_total]
+
+        # 6. Optimize smoothing parameters via MAGIC
+        initial_dispersion = 1.0
+
         optimizer = MAGICOptimizer(
             X=X, y=y, family=self.family, S_list=S_list,
             smooth_starts=smooth_starts,
             smooth_sizes=smooth_sizes,
             offset=offset, dispersion=initial_dispersion
         )
+        optimizer.weights = weights if not np.all(weights == 1.0) else None
         result = optimizer.optimize(
             max_outer_iter=max_outer_iter,
             max_inner_iter=max_inner_iter,
             verbose=verbose,
             use_jax=use_gpu and device_info()['available']
         )
-        
+
         self.beta = result['coef']
         self.smoothing_parameters = result['smooth_lambda']
-        fitted_values = self.family.linkinv(X @ self.beta + (offset if offset is not None else 0))
-        
-        # 6. Compute EDF
-        S_combined = np.zeros_like(X.T @ X)
-        for j, S_j in enumerate(S_list):
-            lam = self.smoothing_parameters[j]
-            i_start = smooth_starts[j]
-            i_stop = i_start + smooth_sizes[j]
-            S_combined[i_start:i_stop, i_start:i_stop] += lam * S_j
-        
+
+        # 7. Compute EDF
+        S_combined = np.zeros((p_total, p_total))
+        for j_pen, S_j_full in enumerate(S_list):
+            if j_pen < len(self.smoothing_parameters):
+                lam = self.smoothing_parameters[j_pen]
+                S_combined += lam * S_j_full
+        self._S_combined = S_combined
+
         edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0)
         self.edf = edf_computer.total_edf()
-        
-        # Per-smooth EDF (simplified: approximate by smooth basis dimension)
+
+        # Per-smooth EDF
         self.edf_per_smooth = {}
-        for i, (start, size) in enumerate(zip(smooth_starts, smooth_sizes)):
-            self.edf_per_smooth[f's(smooth_{i})'] = {'edf': size / 2.0}  # Approximate
-        
+        penalty_idx = 0
+        for i, (start, size) in enumerate(zip(
+            [self.model_matrix.smooth_indices[j].start
+             for j in range(len(self.model_matrix.smooth_indices))],
+            [self.model_matrix.smooth_indices[j].stop - self.model_matrix.smooth_indices[j].start
+             for j in range(len(self.model_matrix.smooth_indices))]
+        )):
+            spec = parser.smooth_terms[i] if i < len(parser.smooth_terms) else None
+            label = spec.label if spec else f'smooth_{i}'
+            self.edf_per_smooth[label] = {'edf': max(1.0, size * 0.5)}  # approximate
+            penalty_idx += 1
+
+        # 8. Estimate dispersion parameter
+        self.dispersion_ = self._estimate_dispersion()
+
         self.fitted = True
         if verbose:
-            print(f'Fitted GAM with {self.edf:.2f} EDF')
-        
+            print(f'Fitted GAM with {self.edf:.2f} total EDF')
+
         return self
+
+    def _load_weights(self, data: pd.DataFrame, n: int) -> np.ndarray:
+        """Load and validate observation weights.
+
+        Args:
+            data: Training data.
+            n: Number of observations.
+
+        Returns:
+            Weights array of shape (n,), all ones if no weights specified.
+        """
+        if self.weights_col is None:
+            return np.ones(n)
+
+        if isinstance(self.weights_col, str):
+            if self.weights_col not in data.columns:
+                raise ValueError(f'Weights column "{self.weights_col}" not found in data')
+            w = data[self.weights_col].values.astype(float)
+        else:
+            w = np.asarray(self.weights_col, dtype=float)
+
+        if len(w) != n:
+            raise ValueError(f'Weights length {len(w)} != n={n}')
+        if not np.all(w > 0):
+            raise ValueError('All weights must be positive')
+        if not np.all(np.isfinite(w)):
+            raise ValueError('All weights must be finite')
+
+        return w / w.mean()  # normalize to mean 1
+
+    def _estimate_dispersion(self) -> float:
+        """Estimate dispersion (scale) parameter φ via Pearson statistic.
+
+        φ̂ = Σ (y - μ)² / V(μ)  /  (n - edf)
+
+        For Gaussian this equals the residual variance.  For other families it
+        estimates the over/under-dispersion factor.
+
+        Returns:
+            Estimated dispersion, clamped to [1e-6, ∞).
+        """
+        if not self.fitted and self._X_fit is None:
+            return 1.0
+
+        X = self._X_fit
+        y = self._y_fit
+        beta = self.beta
+        family = self.family
+        offset = self.model_matrix.offset_vector()
+        if offset is None:
+            offset = np.zeros(len(X))
+
+        eta = X @ beta + offset
+        mu = family.linkinv(eta)
+        var_mu = family.variance(mu)
+        var_mu = np.where(var_mu < 1e-10, 1e-10, var_mu)
+
+        pearson_resid_sq = (y - mu) ** 2 / var_mu
+        n = len(y)
+        edf = self.edf if (self.edf is not None and self.edf > 0) else 1.0
+        dof = max(n - edf, 1.0)
+
+        phi = float(np.sum(pearson_resid_sq) / dof)
+        return max(phi, 1e-6)
+
+    def standard_errors(self) -> Optional[np.ndarray]:
+        """Compute Bayesian posterior standard errors for coefficients.
+
+        Uses the frequentist Bayesian sandwich estimator (Wood 2006):
+            Cov(β) = (X'WX + S_λ)^{-1} X'WX (X'WX + S_λ)^{-1} φ
+
+        For Gaussian, a simpler form is used.
+
+        Returns:
+            Standard errors array of shape (p,), or None if not fitted.
+        """
+        if not self.fitted or self._S_combined is None:
+            return None
+
+        X = self._X_fit
+        beta = self.beta
+        family = self.family
+        offset = self.model_matrix.offset_vector()
+        if offset is None:
+            offset = np.zeros(len(X))
+
+        eta = X @ beta + offset
+        mu = family.linkinv(eta)
+        dmu_deta = family.dmu_deta(eta)
+        var_mu = family.variance(mu)
+        var_mu = np.where(var_mu < 1e-10, 1e-10, var_mu)
+        w = dmu_deta**2 / var_mu
+
+        # Compute efficiently: X'WX = X' * (w[:, None] * X) = (X * sqrt_w).T @ (X * sqrt_w)
+        sqrt_w = np.sqrt(w)
+        Xw = X * sqrt_w[:, np.newaxis]
+        XtWX = Xw.T @ Xw
+
+        A = XtWX + self._S_combined
+        try:
+            # Use Cholesky or pseudoinverse for numerical stability
+            A_inv = np.linalg.pinv(A)
+            Cov = A_inv @ XtWX @ A_inv * self.dispersion_
+            diag_cov = np.diag(Cov)
+            se = np.sqrt(np.maximum(diag_cov, 0.0))
+        except Exception:
+            se = np.full(len(beta), np.nan)
+
+        return se
+
+    def confidence_intervals(self, level: float = 0.95) -> tuple[np.ndarray, np.ndarray]:
+        """Compute confidence intervals for all coefficients.
+
+        Args:
+            level: Confidence level (default 0.95).
+
+        Returns:
+            (lower, upper) arrays of shape (p,).
+        """
+        from scipy.stats import norm
+        se = self.standard_errors()
+        if se is None:
+            return (np.full(len(self.beta), np.nan), np.full(len(self.beta), np.nan))
+        z = norm.ppf((1 + level) / 2)
+        return (self.beta - z * se, self.beta + z * se)
 
     def summary(self) -> str:
         """Return model summary in mgcv format.
 
-        Includes parametric coefficients, smooth term EDFs, p-values,
-        deviance explained, AIC, REML score.
+        Includes parametric coefficients with SEs/p-values, smooth term EDFs,
+        approximate F-statistics, deviance explained, AIC, REML score.
 
         Returns:
-            Human-readable summary string.
+            Human-readable summary string matching mgcv's summary.gam() format.
         """
         if not self.fitted:
             return 'Model not yet fitted. Call .fit() first.'
 
-        from pymgcv.diagnostics.significance_tests import SmoothTestSuite
-        
+        try:
+            from pymgcv.api.summary import summary as _summary
+            return _summary(self, detailed=True)
+        except Exception:
+            pass
+
+        # Fallback summary
         lines = []
         lines.append('Family: ' + self.family.__class__.__name__)
         lines.append('Link function: ' + getattr(self.family, 'link', 'unknown'))
+        lines.append(f'Dispersion parameter: {self.dispersion_:.6f}')
         lines.append('')
         lines.append('Formula: ' + self.formula)
         lines.append('')
@@ -231,12 +400,21 @@ class GAM:
         if self.edf:
             lines.append(f'Effective degrees of freedom: {self.edf:.2f}')
         lines.append('')
-        
-        # Parametric terms (first few coefficients)
+
+        se = self.standard_errors()
         lines.append('Parametric coefficients:')
-        for i, coef in enumerate(self.beta[:min(5, len(self.beta))]):
-            lines.append(f'  Coef {i}: {coef:.6f}')
-        
+        from scipy.stats import t as t_dist
+        n = len(self._y_fit) if self._y_fit is not None else len(self.beta)
+        for i, coef in enumerate(self.beta[:min(8, len(self.beta))]):
+            si = se[i] if (se is not None and i < len(se) and np.isfinite(se[i])) else np.nan
+            if np.isfinite(si) and si > 0:
+                t_val = coef / si
+                p_val = 2 * (1 - t_dist.cdf(abs(t_val), max(1, n - len(self.beta))))
+                stars = '***' if p_val < 0.001 else ('**' if p_val < 0.01 else ('*' if p_val < 0.05 else ''))
+                lines.append(f'  Coef {i}: {coef:.6f}  SE={si:.6f}  t={t_val:.4f}  p={p_val:.4f} {stars}')
+            else:
+                lines.append(f'  Coef {i}: {coef:.6f}')
+
         return '\n'.join(lines)
 
     def predict(
@@ -263,7 +441,8 @@ class GAM:
         from pymgcv.utils.model_matrix import ModelMatrix
         mm = ModelMatrix(data, self.formula)
         X_new = mm.X
-        offset_new = mm.offset if mm.offset is not None else np.zeros(len(data))
+        offset_raw = mm.offset_vector()
+        offset_new = offset_raw if offset_raw is not None else np.zeros(len(data))
 
         # Linear predictor
         eta = X_new @ self.beta + offset_new

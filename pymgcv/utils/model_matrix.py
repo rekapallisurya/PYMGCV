@@ -19,6 +19,9 @@ import pandas as pd
 
 from pymgcv.utils.formula_parser import FormulaParser, ParametricSpec, SmoothSpec
 from pymgcv.smooth.thin_plate import ThinPlateSpline
+from pymgcv.smooth.tensor_product import TensorProductSmooth, TensorProductT2
+from pymgcv.smooth.cyclic_spline import CyclicSpline
+from pymgcv.smooth.random_effect import RandomEffect
 
 
 class ModelMatrix:
@@ -93,7 +96,9 @@ class ModelMatrix:
         # Construct design matrix
         self.X: np.ndarray = np.zeros((self.n_obs, 1))  # placeholder
         self.column_names: list[str] = []
-        self.smooth_bases: list[ThinPlateSpline] = []
+        self.smooth_bases: list = []  # can hold ThinPlateSpline, TensorProductSmooth, etc.
+        self.smooth_specs_used: list[SmoothSpec] = []  # matches smooth_bases order
+        self.smooth_by_levels: list[Optional[list]] = []  # by-variable levels per smooth
         self.param_indices: Optional[slice] = None
         self.smooth_indices: list[slice] = []
 
@@ -113,12 +118,14 @@ class ModelMatrix:
 
         # 2. Smooth terms
         for smooth_spec in self.formula_parser.smooth_terms:
-            X_smooth, smooth_cols, basis_obj = self._construct_smooth_matrix(smooth_spec)
+            X_smooth, smooth_cols, basis_obj, by_levels = self._construct_smooth_matrix(smooth_spec)
             if X_smooth.shape[1] > 0:
                 start_col = sum(x.shape[1] for x in X_parts)
                 X_parts.append(X_smooth)
                 col_names.extend(smooth_cols)
                 self.smooth_bases.append(basis_obj)
+                self.smooth_specs_used.append(smooth_spec)
+                self.smooth_by_levels.append(by_levels)
                 self.smooth_indices.append(
                     slice(start_col, start_col + X_smooth.shape[1])
                 )
@@ -207,43 +214,205 @@ class ModelMatrix:
 
     def _construct_smooth_matrix(
         self, smooth_spec: SmoothSpec
-    ) -> tuple[np.ndarray, list[str], ThinPlateSpline]:
+    ) -> tuple[np.ndarray, list[str], object, Optional[list]]:
         """Construct basis matrix for a smooth term.
+
+        Handles:
+        - s(): TPRS (thin plate), B-spline, cyclic and random effect bases
+        - te(): Full tensor product
+        - ti(): Tensor interaction (removes marginal effects)
+        - t2(): Alternative tensor product
+        - by-variable expansion for varying-coefficient models
 
         Args:
             smooth_spec: SmoothSpec object describing the smooth term.
 
         Returns:
-            (X_smooth, column_names, basis_object)
+            (X_smooth, column_names, basis_object, by_levels)
         """
-        # For now, implement TPRS (thin plate regression splines)
-        # TODO: Add support for other bases (cubic spline, etc.)
+        term_type = smooth_spec.term_type
+        basis_code = smooth_spec.basis.lower()
+        by_levels = None
 
-        if smooth_spec.term_type == 's':
-            # Single-variable smooth
-            if len(smooth_spec.variables) != 1:
-                raise ValueError(
-                    f'Single smooth s() expects 1 variable, got {len(smooth_spec.variables)}'
+        # ---- Tensor product smooths (te, ti, t2) ----
+        if term_type in ('te', 'ti', 't2'):
+            var_names = smooth_spec.variables
+            if len(var_names) < 2:
+                raise ValueError(f'{term_type}() requires at least 2 variables, got {var_names}')
+
+            data_dict = {v: self.data[v].values.astype(float) for v in var_names}
+            k = smooth_spec.k  # k applies to each margin if scalar
+
+            if term_type == 't2':
+                basis_obj = TensorProductT2(
+                    data_dict, var_names,
+                    k_values=[k] * len(var_names) if k else None,
+                    basis_type='tp',
                 )
-            
+            else:
+                interaction_only = (term_type == 'ti')
+                basis_obj = TensorProductSmooth(
+                    data_dict, var_names,
+                    k_values=[k] * len(var_names) if k else None,
+                    basis_type='tp',
+                    interaction_only=interaction_only,
+                )
+
+            X_smooth = basis_obj.basis_matrix()
+            col_names = [f'{smooth_spec.label}.{i}' for i in range(X_smooth.shape[1])]
+            return X_smooth, col_names, basis_obj, by_levels
+
+        # ---- Single-variable smooth (s) ----
+        if term_type == 's':
+            if len(smooth_spec.variables) == 0:
+                raise ValueError('s() requires at least 1 variable')
+
+            # If multiple variables in s(), treat as TPRS multivariate
+            if len(smooth_spec.variables) > 1:
+                var_names = smooth_spec.variables
+                X_multi = np.column_stack(
+                    [self.data[v].values.astype(float) for v in var_names]
+                )
+                basis_obj = ThinPlateSpline(X_multi, k=smooth_spec.k)
+                X_smooth = basis_obj.basis_matrix()
+                col_names = [f'{smooth_spec.label}.{i}' for i in range(X_smooth.shape[1])]
+                return X_smooth, col_names, basis_obj, by_levels
+
             var_name = smooth_spec.variables[0]
-            X_var = self.data[var_name].values.reshape(-1, 1).astype(float)
-            
-            # Construct TPRS basis
-            basis = ThinPlateSpline(X_var, k=smooth_spec.k)
-            X_smooth = basis.basis_matrix()
-            
-        elif smooth_spec.term_type == 'te':
-            # Tensor product smooth
-            # TODO: Implement tensor product basis
-            raise NotImplementedError('Tensor product (te) not yet implemented')
+            X_var = self.data[var_name].values.astype(float)
+
+            # Select basis type based on bs/basis argument
+            if basis_code in ('cc', 'cp'):
+                # Cyclic cubic spline
+                basis_obj = CyclicSpline(X_var, k=smooth_spec.k or 10)
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code == 're':
+                # Random effect
+                basis_obj = RandomEffect(self.data[var_name], k=smooth_spec.k)
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code in ('bs', 'ps', 'cr', 'cs'):
+                # B-spline / P-spline / Cubic regression spline
+                if basis_code in ('cr', 'cs'):
+                    from pymgcv.smooth.cubic_spline import CubicRegressionSpline, CubicShrinkageSpline
+                    cls = CubicShrinkageSpline if basis_code == 'cs' else CubicRegressionSpline
+                    basis_obj = cls(X_var, k=smooth_spec.k or 10)
+                elif basis_code == 'ps':
+                    from pymgcv.smooth.bspline import PSplineBasis
+                    basis_obj = PSplineBasis(X_var, k=smooth_spec.k or 20)
+                else:  # bs
+                    from pymgcv.smooth.bspline import BSplineBasis
+                    basis_obj = BSplineBasis(X_var, k=smooth_spec.k or 10)
+                X_smooth_base = basis_obj.B if hasattr(basis_obj, 'B') else basis_obj.basis_matrix
+
+            elif basis_code == 'ad':
+                # Adaptive smooth
+                from pymgcv.smooth.advanced import AdaptiveSpline
+                basis_obj = AdaptiveSpline(X_var, k=smooth_spec.k or 20)
+                X_smooth_base = basis_obj.B
+
+            elif basis_code == 'gp':
+                # Gaussian process smooth
+                from pymgcv.smooth.advanced import GPSmooth
+                basis_obj = GPSmooth(X_var, k=smooth_spec.k or 10)
+                X_smooth_base = basis_obj.B
+
+            elif basis_code in ('fs', 'sz'):
+                # Factor smooth interaction: requires a by-variable
+                by_var = smooth_spec.by_variable
+                if by_var is None or by_var not in self.data.columns:
+                    # Fall back to TPRS if no grouping variable available
+                    basis_obj = ThinPlateSpline(X_var.reshape(-1, 1), k=smooth_spec.k)
+                    X_smooth_base = basis_obj.basis_matrix()
+                else:
+                    group = self.data[by_var]
+                    if basis_code == 'fs':
+                        from pymgcv.smooth.advanced import FactorSmooth
+                        basis_obj = FactorSmooth(X_var, group, k=smooth_spec.k or 10)
+                    else:
+                        from pymgcv.smooth.advanced import FactorDeviation
+                        basis_obj = FactorDeviation(X_var, group, k=smooth_spec.k or 10)
+                    X_smooth_base = basis_obj.B
+
+            else:
+                # Default: thin plate regression spline
+                basis_obj = ThinPlateSpline(X_var.reshape(-1, 1), k=smooth_spec.k)
+                X_smooth_base = basis_obj.basis_matrix()
+
+        elif term_type == 're':
+            # Standalone re() random effect
+            if len(smooth_spec.variables) == 0:
+                raise ValueError('re() requires at least 1 variable')
+            var_name = smooth_spec.variables[0]
+            basis_obj = RandomEffect(self.data[var_name], k=smooth_spec.k)
+            X_smooth_base = basis_obj.basis_matrix()
+
         else:
-            raise ValueError(f'Unknown smooth term type: {smooth_spec.term_type}')
+            raise ValueError(f'Unknown smooth term type: {term_type}')
 
-        # Column names for this smooth term
-        col_names = [f'{smooth_spec.label}.{i}' for i in range(X_smooth.shape[1])]
+        # ---- by-variable expansion ----
+        X_smooth, by_levels = self._expand_by_variable(
+            X_smooth_base, smooth_spec, self.data
+        )
 
-        return X_smooth, col_names, basis
+        n_cols = X_smooth.shape[1]
+        col_names = [f'{smooth_spec.label}.{i}' for i in range(n_cols)]
+        return X_smooth, col_names, basis_obj, by_levels
+
+    def _expand_by_variable(
+        self,
+        X_basis: np.ndarray,
+        smooth_spec: SmoothSpec,
+        data: pd.DataFrame,
+    ) -> tuple[np.ndarray, Optional[list]]:
+        """Expand basis matrix for by-variable (varying-coefficient models).
+
+        For s(x, by=group) with factor group:
+            Result shape: (n, k * n_levels), padded with zeros per level.
+
+        For s(x, by=weight) with continuous weight:
+            Result shape: (n, k), element-wise scaled.
+
+        Args:
+            X_basis: Marginal basis matrix, shape (n, k).
+            smooth_spec: Smooth specification (contains by_variable).
+            data: DataFrame with all variables.
+
+        Returns:
+            (X_expanded, levels_list_or_None)
+        """
+        if smooth_spec.by_variable is None:
+            return X_basis, None
+
+        by_var = smooth_spec.by_variable
+        if by_var not in data.columns:
+            raise ValueError(f'by-variable "{by_var}" not found in data')
+
+        by_data = data[by_var]
+        by_vals = by_data.values
+        n, k = X_basis.shape
+
+        # Detect factor vs continuous
+        if by_vals.dtype.kind in ('U', 'O', 'S') or hasattr(by_data, 'cat'):
+            # Factor by-variable
+            levels = list(np.unique(by_vals.astype(str)))
+            n_levels = len(levels)
+            level_map = {lv: i for i, lv in enumerate(levels)}
+
+            X_expanded = np.zeros((n, k * n_levels))
+            for i, val in enumerate(by_vals.astype(str)):
+                level_idx = level_map.get(val, None)
+                if level_idx is not None:
+                    X_expanded[i, level_idx * k:(level_idx + 1) * k] = X_basis[i, :]
+
+            return X_expanded, levels
+
+        else:
+            # Continuous by-variable: element-wise scale
+            by_cont = by_vals.astype(float)
+            X_expanded = X_basis * by_cont[:, np.newaxis]
+            return X_expanded, None
 
     def _center_scale_parametric(self) -> None:
         """Center and/or scale parametric terms."""

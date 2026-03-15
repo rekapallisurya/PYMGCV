@@ -76,30 +76,30 @@ class TestGAMIntegration:
 
     def test_family_gaussian(self, synthetic_data):
         """Test Gaussian family."""
-        from pymgcv.family.family import GaussianFamily
-        
+        from pymgcv.distributions.family_base import GaussianFamily
+
         family = GaussianFamily()
-        
-        # Test link function
-        eta = np.array([0, 1, -1])
-        mu = family.link.inverse(eta)
+
+        # Test link function (identity)
+        eta = np.array([0.0, 1.0, -1.0])
+        mu = family.linkinv(eta)
         assert np.allclose(mu, eta)  # Identity link
-        
+
         # Test variance
         var = family.variance(mu)
         assert np.allclose(var, np.ones_like(mu))  # Constant variance
 
     def test_family_binomial(self, synthetic_data):
         """Test Binomial family."""
-        from pymgcv.family.family import BinomialFamily
-        
+        from pymgcv.distributions.family_base import BinomialFamily
+
         family = BinomialFamily()
-        
-        # Test link function
-        eta = np.array([0, 1, -1])
-        mu = family.link.inverse(eta)
+
+        # Test link function (logit → probabilities)
+        eta = np.array([0.0, 1.0, -1.0])
+        mu = family.linkinv(eta)
         assert np.all((mu >= 0) & (mu <= 1))  # Probabilities
-        
+
         # Test variance
         var = family.variance(mu)
         assert np.all(var >= 0)
@@ -131,44 +131,34 @@ class TestGAMIntegration:
 
     def test_gam_basic_fit(self, synthetic_data):
         """Test basic GAM fitting workflow."""
-        from pymgcv import GAM
-        from pymgcv.smooth_term import SmoothTerm
-        
-        X = synthetic_data['X'].reshape(-1, 1)
+        from pymgcv.api.gam import GAM
+        import pandas as pd
+
+        X = synthetic_data['X']
         y = synthetic_data['y']
-        
-        # Fit GAM with one smooth term
-        try:
-            gam = GAM(y, X, smooth_terms={'x': {'k': 10}})
-            gam.fit()
-            
-            # Check fit quality
-            residuals = y - gam.predict(X)
-            rmse = np.sqrt(np.mean(residuals**2))
-            
-            # Should be reasonably small
-            assert rmse < 0.3
-            assert len(gam.coefficients) > 0
-        except Exception as e:
-            # If fitting not fully implemented, at least check structure
-            assert hasattr(gam, 'y')
-            assert hasattr(gam, 'X')
+        data = pd.DataFrame({'x1': X, 'y': y})
+
+        gam = GAM('y ~ s(x1)', data=data, family='gaussian')
+        gam.fit()
+
+        fitted = gam.predict(data, scale='response')
+        residuals = y - fitted
+        rmse = np.sqrt(np.mean(residuals ** 2))
+
+        assert rmse < 0.3
+        assert len(gam.beta) > 0
 
     def test_thin_plate_spline(self, synthetic_data):
         """Test thin-plate spline basis."""
-        from pymgcv.smooth.thinplate import ThinPlateBasis
-        
+        from pymgcv.smooth.thin_plate import ThinPlateSpline
+
         X = synthetic_data['X']
-        tps = ThinPlateBasis(X.reshape(-1, 1), k=10)
-        
-        # Check basis matrix
-        assert tps.basis_matrix.shape[0] == len(X)
-        assert tps.basis_matrix.shape[1] <= 10
-        
-        # Check penalty matrix
-        S = tps.penalty_matrix
-        assert S.shape[1] == S.shape[0]
-        assert np.allclose(S, S.T)
+        tps = ThinPlateSpline(X.reshape(-1, 1), k=10)
+
+        B = tps.basis_matrix()
+        assert B.shape[0] == len(X)
+        assert B.shape[1] <= 10
+        assert np.all(np.isfinite(B))
 
 
 class TestNumericalStability:

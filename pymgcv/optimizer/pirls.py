@@ -88,6 +88,9 @@ class PIRLSSolver:
         self.mu: np.ndarray = np.ones_like(self.y)  # Placeholder
         self.eta: np.ndarray = np.zeros_like(self.y)
 
+        # Family-specific mu initialization
+        self._initialize_from_family()
+
         # Convergence tracking
         self.converged = False
         self.iterations = 0
@@ -133,6 +136,43 @@ class PIRLSSolver:
         
         return weights
 
+    def _initialize_from_family(self) -> None:
+        """Set sensible starting beta/mu/eta using family.initialize()."""
+        if not hasattr(self.family, 'initialize'):
+            return  # Use defaults (zeros)
+
+        mu_init = self.family.initialize(self.y)
+        mu_init = np.asarray(mu_init, dtype=np.float64)
+        self.mu = mu_init
+
+        if hasattr(self.family, 'linkfun'):
+            eta_init = self.family.linkfun(mu_init)
+        else:
+            # Fallback: try family.linkinv inverse numerically (not used)
+            eta_init = np.zeros_like(mu_init)
+
+        # If there's an intercept (first column all-ones), set beta[0] so that
+        # X @ beta + offset ≈ mean(eta_init) for the intercept-only model.
+        if self.p > 0 and np.allclose(self.X[:, 0], 1.0):
+            target_eta = np.mean(eta_init - self.offset)
+            if np.isfinite(target_eta):
+                self.beta[0] = target_eta
+
+        # Recompute eta and mu from initialized beta
+        self.eta = self.X @ self.beta + self.offset
+        self.mu = self.family.linkinv(self.eta)
+
+        # Clip mu to valid domain to avoid numerical issues
+        self._clip_mu()
+
+    def _clip_mu(self) -> None:
+        """Clip mu to the valid domain for the current family."""
+        family_name = type(self.family).__name__.lower()
+        if 'binomial' in family_name:
+            self.mu = np.clip(self.mu, 1e-6, 1.0 - 1e-6)
+        elif any(x in family_name for x in ('poisson', 'gamma', 'tweedie', 'negative', 'inverse')):
+            self.mu = np.maximum(self.mu, 1e-6)
+
     def _construct_combined_penalty(self) -> np.ndarray:
         """Construct combined penalty Sλ = Σⱼ λⱼ Sⱼ."""
         S = np.zeros((self.p, self.p))
@@ -157,9 +197,11 @@ class PIRLSSolver:
             Fitted coefficient vector β.
         """
         for it in range(max_iter):
-            # Compute predictions
-            self.eta = self.X @ self.beta + self.offset
-            self.mu = self.family.linkinv(self.eta)
+            # Compute predictions (use initialized mu on first pass if already set)
+            if it > 0 or np.any(self.beta != 0.0):
+                self.eta = self.X @ self.beta + self.offset
+                self.mu = self.family.linkinv(self.eta)
+                self._clip_mu()
 
             # Compute weights and working vector
             dmu_deta = self.family.dmu_deta(self.eta)
@@ -290,7 +332,7 @@ class PIRLSSolver:
             # Evaluate deviance
             try:
                 mu_trial = self.family.linkinv(eta_trial)
-                if np.any(mu_trial <= 0) or not np.all(np.isfinite(mu_trial)):
+                if not np.all(np.isfinite(mu_trial)):
                     step_size *= 0.5
                     continue
                 

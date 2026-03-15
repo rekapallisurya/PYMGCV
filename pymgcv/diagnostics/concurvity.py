@@ -35,6 +35,26 @@ def concurvity(X_smooth: np.ndarray, indices: list[slice]) -> dict:
     # Extract basis matrices for each smooth
     bases = [X_smooth[:, idx] for idx in indices]
 
+    def _max_r2(A: np.ndarray, B: np.ndarray) -> float:
+        """Maximum R² when projecting any column of A onto the column space of B.
+
+        This gives the pairwise concurvity: how much of smooth A can be explained
+        by the column space of smooth B.
+        """
+        try:
+            # Compute hat matrix of B projection: H_B = B(B'B)^{-1}B'
+            # For each column of A, R² = ||H_B a||² / ||a||²
+            Q, _ = np.linalg.qr(B)
+            # Projected: H_B @ A = Q @ Q.T @ A
+            A_proj = Q @ (Q.T @ A)
+            # R² per column
+            norms_A = np.maximum(np.sum(A ** 2, axis=0), 1e-12)
+            norms_proj = np.sum(A_proj ** 2, axis=0)
+            r2_vals = norms_proj / norms_A
+            return float(np.max(np.clip(r2_vals, 0, 1)))
+        except Exception:
+            return 0.0
+
     # Compute concurvity matrix
     n_smooths = len(bases)
     concurv_matrix = np.zeros((n_smooths, n_smooths))
@@ -44,22 +64,7 @@ def concurvity(X_smooth: np.ndarray, indices: list[slice]) -> dict:
             if i == j:
                 concurv_matrix[i, j] = 1.0
             else:
-                # Concurvity between smooths i and j
-                # Use canonical correlation or correlation of fitted values
-                try:
-                    # Compute correlation between predictions from smooths
-                    pred_i = bases[i]
-                    pred_j = bases[j]
-
-                    # Normalize
-                    pred_i_norm = pred_i / (np.linalg.norm(pred_i, axis=0) + 1e-10)
-                    pred_j_norm = pred_j / (np.linalg.norm(pred_j, axis=0) + 1e-10)
-
-                    # Maximum absolute correlation
-                    corr = np.abs(np.max(np.corrcoef(pred_i_norm.T, pred_j_norm.T)))
-                    concurv_matrix[i, j] = np.clip(corr, 0, 1)
-                except:
-                    concurv_matrix[i, j] = 0.0
+                concurv_matrix[i, j] = _max_r2(bases[i], bases[j])
 
     # Overall concurvity (condition number)
     try:

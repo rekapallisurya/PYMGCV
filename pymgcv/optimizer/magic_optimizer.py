@@ -77,6 +77,7 @@ class MAGICOptimizer:
         self.smooth_sizes = smooth_sizes
         self.offset = np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
         self.dispersion = float(dispersion)
+        self.weights = None  # set externally if needed
 
         self.n_smooth = len(S_list)
 
@@ -99,6 +100,7 @@ class MAGICOptimizer:
         verbose: bool = False,
         use_jax: bool = False,
         use_reml: bool = True,
+        method: str = 'reml',
     ) -> dict:
         """Optimize smoothing parameters via MAGIC.
 
@@ -113,11 +115,42 @@ class MAGICOptimizer:
             inner_tol: Convergence tolerance for PIRLS.
             verbose: Print progress.
             use_jax: Use JAX GPU acceleration if available.
-            use_reml: Use REML (vs GCV) for λ optimization.
+            use_reml: Use REML (vs GCV) for λ optimization (deprecated; use method=).
+            method: Smoothing criterion — 'reml' (default), 'gcv', 'ubre', 'ml'.
 
         Returns:
             Dict with 'coef', 'smooth_lambda', 'fitted_values', 'edf'.
         """
+        # Backwards-compatibility: use_reml=False → gcv
+        if not use_reml and method == 'reml':
+            method = 'gcv'
+
+        if method in ('gcv', 'ubre', 'ml'):
+            return self._optimize_gcv(
+                method=method,
+                max_outer_iter=max_outer_iter,
+                max_inner_iter=max_inner_iter,
+                outer_tol=outer_tol,
+                inner_tol=inner_tol,
+                verbose=verbose,
+            )
+        # Default: REML
+        return self._optimize_reml(
+            max_outer_iter=max_outer_iter,
+            max_inner_iter=max_inner_iter,
+            outer_tol=outer_tol,
+            inner_tol=inner_tol,
+            verbose=verbose,
+        )
+
+    def _optimize_reml(
+        self,
+        max_outer_iter: int,
+        max_inner_iter: int,
+        outer_tol: float,
+        inner_tol: float,
+        verbose: bool,
+    ) -> dict:
         from pymgcv.optimizer.pirls import PIRLSSolver
         from pymgcv.optimizer.reml_objective import REMLObjective
 
@@ -131,6 +164,7 @@ class MAGICOptimizer:
                 lambda_vec=self.lambda_vec,
                 offset=self.offset,
                 dispersion=self.dispersion,
+                weights=self.weights,
             )
             beta = solver.solve(max_iter=max_inner_iter, tol=inner_tol, verbose=False)
 
@@ -154,19 +188,23 @@ class MAGICOptimizer:
                 )
 
             # Newton step on log(λ)
+            if not (np.isfinite(reml_score) and
+                    np.all(np.isfinite(grad_log_lambda)) and
+                    np.all(np.isfinite(hess_log_lambda))):
+                if verbose:
+                    print(f'  Warning: REML non-finite at iter {outer_it}, stopping')
+                break
+
             try:
                 d_log_lambda = linalg.solve(hess_log_lambda, -grad_log_lambda)
-            except linalg.LinAlgError:
-                # If Hessian singular, use gradient descent
+            except (linalg.LinAlgError, ValueError):
                 d_log_lambda = -0.01 * grad_log_lambda
 
-            # Line search (simple backtracking)
+            # Backtracking line search
             alpha = 1.0
-            for line_it in range(5):
+            for _ in range(5):
                 lambda_log_new = self.lambda_log + alpha * d_log_lambda
                 lambda_new = np.exp(lambda_log_new)
-
-                # Refit at new lambda
                 solver_new = PIRLSSolver(
                     self.X, self.y, self.family, self.S_list,
                     lambda_vec=lambda_new,
@@ -174,24 +212,16 @@ class MAGICOptimizer:
                     dispersion=self.dispersion,
                 )
                 beta_new = solver_new.solve(max_iter=max_inner_iter, tol=inner_tol, verbose=False)
-
                 reml_score_new = reml_obj.objective(beta_new, np.log(lambda_new))
-
                 if reml_score_new < reml_score:
                     self.lambda_log = lambda_log_new
                     break
-                else:
-                    alpha *= 0.5
+                alpha *= 0.5
             else:
-                # Line search failed; just accept step
                 self.lambda_log += alpha * d_log_lambda
 
-            # Convergence check
             if len(d_log_lambda) == 0:
-                # No smoothing parameters (parametric-only model)
                 self.converged = True
-                if verbose:
-                    print('Parametric-only model (no smooth terms)')
                 break
             elif np.max(np.abs(alpha * d_log_lambda)) < outer_tol:
                 self.converged = True
@@ -200,8 +230,6 @@ class MAGICOptimizer:
                 break
 
         self.lambda_vec = np.exp(self.lambda_log)
-        
-        # Final PIRLS fit with optimized lambda
         solver_final = PIRLSSolver(
             self.X, self.y, self.family, self.S_list,
             lambda_vec=self.lambda_vec,
@@ -210,12 +238,93 @@ class MAGICOptimizer:
         )
         beta_final = solver_final.solve(max_iter=max_inner_iter, tol=inner_tol, verbose=False)
         fitted_vals = solver_final.fitted_values()
-        
         return {
             'coef': beta_final,
             'smooth_lambda': self.lambda_vec,
             'fitted_values': fitted_vals,
-            'edf': len(beta_final) - 5.0,  # Conservative estimate
+            'edf': len(beta_final) - 5.0,
+        }
+
+    def _optimize_gcv(
+        self,
+        method: str,
+        max_outer_iter: int,
+        max_inner_iter: int,
+        outer_tol: float,
+        inner_tol: float,
+        verbose: bool,
+    ) -> dict:
+        """Optimize smoothing parameters via GCV, UBRE, or ML criterion.
+
+        Uses scipy.optimize.minimize on log(lambda) with numerical gradients.
+        Supports Gaussian (GCV/UBRE) and non-Gaussian families (ML).
+        """
+        from pymgcv.optimizer.pirls import PIRLSSolver
+
+        n = len(self.y)
+
+        def _criterion(log_lam: np.ndarray) -> float:
+            lam = np.exp(log_lam)
+            s = PIRLSSolver(
+                self.X, self.y, self.family, self.S_list,
+                lambda_vec=lam,
+                offset=self.offset,
+                dispersion=self.dispersion,
+                weights=self.weights,
+            )
+            beta = s.solve(max_iter=max_inner_iter, tol=inner_tol)
+            eta = self.X @ beta + self.offset
+            mu = self.family.linkinv(eta)
+
+            # Combined penalty matrix
+            S_lam = sum(l * S for l, S in zip(lam, self.S_list))
+            XtWX = self.X.T @ (self.X * s.weights[:, None])
+
+            try:
+                H_inv = np.linalg.inv(XtWX + S_lam)
+            except np.linalg.LinAlgError:
+                H_inv = np.linalg.pinv(XtWX + S_lam)
+
+            dof = float(np.trace(H_inv @ XtWX))
+            dof = np.clip(dof, 0, self.X.shape[1])
+
+            if method == 'gcv':
+                dev = float(np.sum((self.y - mu) ** 2))
+                denom = max(n - dof, 0.5)
+                score = n * dev / denom ** 2
+            elif method == 'ubre':
+                # UBRE: (1/n) * D + 2 * phi * dof/n - phi
+                phi = self.dispersion
+                dev = float(np.sum((self.y - mu) ** 2))
+                score = dev / n + 2.0 * phi * dof / n - phi
+            else:  # ml
+                score = -float(self.family.loglik(self.y, mu, self.dispersion))
+                score += 0.5 * float(beta @ S_lam @ beta)
+
+            return score if np.isfinite(score) else 1e30
+
+        result = optimize.minimize(
+            _criterion,
+            x0=self.lambda_log.copy(),
+            method='Nelder-Mead',
+            options={'maxiter': max_outer_iter * 20, 'xatol': outer_tol, 'fatol': outer_tol},
+        )
+        self.lambda_log = result.x
+        self.lambda_vec = np.exp(self.lambda_log)
+        self.converged = result.success
+
+        solver_final = PIRLSSolver(
+            self.X, self.y, self.family, self.S_list,
+            lambda_vec=self.lambda_vec,
+            offset=self.offset,
+            dispersion=self.dispersion,
+        )
+        beta_final = solver_final.solve(max_iter=max_inner_iter, tol=inner_tol)
+        return {
+            'coef': beta_final,
+            'smooth_lambda': self.lambda_vec,
+            'fitted_values': solver_final.fitted_values(),
+            'edf': len(beta_final) - 5.0,
         }
 
     def smoothing_parameters(self) -> np.ndarray:

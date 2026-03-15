@@ -1,25 +1,15 @@
-"""B-splines basis for GAM smoothing.
+"""B-spline and P-spline basis for GAM smoothing.
 
-B-splines (basis splines) provide:
-- Flexible basis order (k)
-- Multiple penalty orders
-- Numerical stability
-- Local support
+Provides:
+  - BSplineBasis  (bs='bs')  — integrated-squared-derivative penalty
+  - PSplineBasis  (bs='ps')  — Eilers-Marx difference penalty (faster)
+  - Shared low-level helpers for knot construction and penalty matrices
 
-Theory:
-    De Boor's B-splines of order p (degree p-1):
-    - Defined recursively via knot vectors
-    - Each basis function has compact support
-    - Can apply multiple derivative penalties
-    
 References:
     - de Boor, C. (1978). A Practical Guide to Splines.
+    - Eilers, P.H.C. & Marx, B.D. (1996). Flexible smoothing with B-splines
+      and penalties. Statistical Science, 11(2), 89-121.
     - Wood, S.N. (2017). GAMs: An Introduction with R.
-
-Module exports:
-    - BSplineBasis: Main B-spline basis class
-    - bspline_basis_matrix: Function to construct basis
-    - bspline_penalty: Function to construct penalty matrix
 """
 
 from __future__ import annotations
@@ -27,219 +17,249 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from scipy.interpolate import BSpline, make_interp_spline
+from scipy.interpolate import BSpline
+from numpy.polynomial.legendre import leggauss
 
+
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
+
+def _make_knots(x: np.ndarray, k: int, degree: int) -> np.ndarray:
+    """Build clamped B-spline knot vector with quantile interior knots.
+
+    Total knots = k + degree + 1.
+    """
+    n_interior = k - degree - 1
+    x_min, x_max = float(x.min()), float(x.max())
+    if x_min == x_max:
+        x_max = x_min + 1.0
+    if n_interior <= 0:
+        return np.concatenate([
+            np.full(degree + 1, x_min),
+            np.full(degree + 1, x_max),
+        ])
+    q = np.linspace(0, 1, n_interior + 2)[1:-1]
+    interior = np.quantile(x, q)
+    interior = np.clip(interior, x_min + 1e-12, x_max - 1e-12)
+    return np.concatenate([
+        np.full(degree + 1, x_min),
+        interior,
+        np.full(degree + 1, x_max),
+    ])
+
+
+def _bspline_design_matrix(x: np.ndarray, t: np.ndarray, degree: int) -> np.ndarray:
+    """Evaluate all B-spline basis functions at each data point.
+
+    Args:
+        x: Data values, shape (n,).
+        t: Knot vector.
+        degree: Polynomial degree.
+
+    Returns:
+        Basis matrix B, shape (n, k) where k = len(t) - degree - 1.
+    """
+    k = len(t) - degree - 1
+    # BSpline.design_matrix added in scipy 1.7; fall back for older versions
+    try:
+        B_sparse = BSpline.design_matrix(x, t, degree)
+        B = B_sparse.toarray() if hasattr(B_sparse, 'toarray') else np.asarray(B_sparse)
+        return B
+    except (AttributeError, TypeError):
+        B = np.zeros((len(x), k))
+        for i in range(k):
+            c = np.zeros(k)
+            c[i] = 1.0
+            spl = BSpline(t, c, degree, extrapolate=True)
+            B[:, i] = spl(x)
+        return B
+
+
+def _diff_matrix(k: int, m: int) -> np.ndarray:
+    """m-th order finite-difference matrix D, shape (k-m, k).  S = D.T @ D."""
+    D = np.eye(k)
+    for _ in range(m):
+        D = np.diff(D, axis=0)
+    return D
+
+
+def _bspline_integral_penalty(t: np.ndarray, degree: int, deriv_order: int = 2) -> np.ndarray:
+    """Integrated-squared-derivative penalty matrix via Gauss-Legendre quadrature.
+
+    S_ij = ∫ (d^m/dx^m B_i(x)) (d^m/dx^m B_j(x)) dx
+
+    Args:
+        t: Knot vector (clamped).
+        degree: Polynomial degree.
+        deriv_order: Derivative order m (default 2).
+
+    Returns:
+        Penalty matrix S, shape (k, k).
+    """
+    k = len(t) - degree - 1
+    if degree < deriv_order:
+        return np.zeros((k, k))
+
+    unique_knots = np.unique(t)
+    S = np.zeros((k, k))
+    gl_pts, gl_wts = leggauss(max(5, degree + 1))
+
+    for left, right in zip(unique_knots[:-1], unique_knots[1:]):
+        if right - left < 1e-14:
+            continue
+        mid = 0.5 * (left + right)
+        half = 0.5 * (right - left)
+        x_gl = mid + half * gl_pts
+        w_gl = half * gl_wts
+
+        # Evaluate m-th derivative of each B-spline at quadrature nodes
+        Bd = np.zeros((len(x_gl), k))
+        for i in range(k):
+            c = np.zeros(k)
+            c[i] = 1.0
+            spl = BSpline(t, c, degree, extrapolate=False)
+            spl_d = spl.derivative(deriv_order)
+            vals = spl_d(x_gl)
+            Bd[:, i] = np.where(np.isfinite(vals), vals, 0.0)
+
+        S += (Bd * w_gl[:, None]).T @ Bd
+
+    return S
+
+
+# ---------------------------------------------------------------------------
+# BSplineBasis  (bs='bs')
+# ---------------------------------------------------------------------------
 
 class BSplineBasis:
-    """B-spline basis for univariate smoothing.
-
-    Uses standard B-spline basis with flexible order and penalty options.
+    """B-spline basis with integrated-squared-derivative penalty (bs='bs').
 
     Attributes:
         X: Input data, shape (n,).
-        k: Basis dimension (number of basis functions).
-        order: B-spline order (degree + 1). Default 4 = cubic.
-        penorder: Penalty order (derivative order to penalize). Default 2.
-        basis_matrix: Computed basis matrix, shape (n, k).
-        penalty_matrix: Computed penalty matrix, shape (k, k).
+        k: Number of basis functions.
+        degree: Polynomial degree (default 3 = cubic).
+        penorder: Derivative order to penalise (default 2).
+        knots: Full clamped knot vector.
+        B: Basis matrix, shape (n, k).
+        S: Penalty matrix, shape (k, k).
     """
 
     def __init__(
         self,
         X: np.ndarray,
         k: int = 10,
-        order: int = 4,
+        degree: int = 3,
         penorder: int = 2,
+        # Legacy alias: order = degree + 1
+        order: Optional[int] = None,
     ) -> None:
-        """Initialize B-spline basis.
-
-        Args:
-            X: Input data, shape (n,) or (n, 1).
-            k: Number of basis functions.
-            order: B-spline order (4 = cubic, default).
-            penorder: Penalty derivative order (2 = 2nd deriv, default).
-        """
-        self.X = np.asarray(X, dtype=np.float64).ravel()
+        self.X = np.asarray(X, dtype=float).ravel()
         self.n = len(self.X)
+        # Support legacy 'order' parameter
+        if order is not None:
+            degree = order - 1
         self.k = k
-        self.order = order
+        self.degree = degree
+        self.order = degree + 1  # keep old attribute
         self.penorder = penorder
 
-        if k < order:
-            raise ValueError(f'k={k} must be >= order={order}')
+        if k <= degree:
+            raise ValueError(f'k={k} must be > degree={degree}')
 
-        # Create knot vector
-        self.knots = self._create_knot_vector()
+        self.knots = _make_knots(self.X, k, degree)
+        self.B = _bspline_design_matrix(self.X, self.knots, degree)
+        self.S = _bspline_integral_penalty(self.knots, degree, penorder)
 
-        # Compute basis and penalty matrices
-        self.basis_matrix = self._compute_basis()
-        self.penalty_matrix = self._compute_penalty()
+        # Legacy attribute names kept for backward compat
+        self.basis_matrix = self.B
+        self.penalty_matrix = self.S
 
-    def _create_knot_vector(self) -> np.ndarray:
-        """Create knot vector for B-splines.
+    def predict(self, X_new: np.ndarray) -> np.ndarray:
+        X_new = np.asarray(X_new, dtype=float).ravel()
+        return _bspline_design_matrix(X_new, self.knots, self.degree)
 
-        Interior knots placed at quantiles of data.
-        Boundary knots repeated to match order.
-        """
-        # Number of interior knots
-        n_interior = self.k - self.order
 
-        if n_interior <= 0:
-            # No interior knots, just boundary
-            x_min, x_max = self.X.min(), self.X.max()
-            knots = np.concatenate([
-                [x_min] * self.order,
-                [x_max] * self.order
-            ])
-        else:
-            # Place interior knots at quantiles
-            quantiles = np.linspace(0, 1, n_interior + 2)[1:-1]
-            interior = np.quantile(self.X, quantiles)
+# ---------------------------------------------------------------------------
+# PSplineBasis  (bs='ps')
+# ---------------------------------------------------------------------------
 
-            x_min, x_max = self.X.min(), self.X.max()
+class PSplineBasis:
+    """P-spline: uniform B-spline basis + discrete difference penalty (bs='ps').
 
-            knots = np.concatenate([
-                [x_min] * self.order,
-                interior,
-                [x_max] * self.order
-            ])
+    Eilers & Marx (1996) approach: equally-spaced interior knots + D^T D penalty
+    on consecutive B-spline coefficients.  Much faster than BSplineBasis for
+    large data because the penalty is a simple banded matrix.
 
-        return knots
+    Attributes:
+        X: Input data, shape (n,).
+        k: Number of B-spline coefficients.
+        degree: Polynomial degree (default 3).
+        m: Difference order for penalty (default 2).
+        B: Basis matrix, shape (n, k).
+        S: P-spline penalty D^T D, shape (k, k).
+    """
 
-    def _compute_basis(self) -> np.ndarray:
-        """Compute B-spline basis matrix using scipy.
+    def __init__(
+        self,
+        X: np.ndarray,
+        k: int = 20,
+        degree: int = 3,
+        m: int = 2,
+    ) -> None:
+        self.X = np.asarray(X, dtype=float).ravel()
+        self.n = len(self.X)
+        self.k = k
+        self.degree = degree
+        self.m = m
 
-        Returns:
-            Basis matrix, shape (n, k).
-        """
-        # Create B-spline object
-        try:
-            spl = BSpline.construct_fast(
-                self.knots,
-                np.eye(self.k)[0],  # dummy coefficients
-                self.order - 1  # degree = order - 1
-            )
+        if k <= degree:
+            raise ValueError(f'k={k} must be > degree={degree}')
 
-            # Evaluate basis functions
-            B = np.zeros((self.n, self.k))
-            for i in range(self.k):
-                coeffs = np.zeros(self.k)
-                coeffs[i] = 1.0
-                spl_i = BSpline.construct_fast(self.knots, coeffs, self.order - 1)
-                B[:, i] = spl_i(self.X)
+        x_min, x_max = float(self.X.min()), float(self.X.max())
+        if x_min == x_max:
+            x_max = x_min + 1.0
+        n_interior = k - degree - 1
+        interior = np.linspace(x_min, x_max, n_interior + 2)[1:-1] if n_interior > 0 else np.array([])
+        t = np.concatenate([
+            np.full(degree + 1, x_min),
+            interior,
+            np.full(degree + 1, x_max),
+        ])
+        self.knots = t
+        self.B = _bspline_design_matrix(self.X, t, degree)
 
-            return B
-        except Exception:
-            # Fallback: use simple basis construction
-            return self._simple_basis_construction()
+        D = _diff_matrix(k, m)
+        self.S = D.T @ D
 
-    def _simple_basis_construction(self) -> np.ndarray:
-        """Fallback basis construction using make_interp_spline."""
-        # Create simple evaluation points
-        x_eval = np.linspace(self.X.min(), self.X.max(), self.k)
+    def basis_matrix(self) -> np.ndarray:
+        return self.B
 
-        try:
-            spl = make_interp_spline(x_eval, np.eye(self.k), k=self.order - 1)
-            return spl(self.X)
-        except Exception:
-            # Last resort: polynomial basis
-            B = np.zeros((self.n, self.k))
-            for i in range(min(self.k, 5)):
-                B[:, i] = self.X ** i
-            # Fill remaining cols with random smooth functions
-            for i in range(5, self.k):
-                B[:, i] = np.sin(np.pi * i * self.X / self.X.max())
-            return B
+    def penalty_matrix(self) -> np.ndarray:
+        return self.S
 
-    def _compute_penalty(self) -> np.ndarray:
-        """Compute penalty matrix for derivative penalties.
+    def predict(self, X_new: np.ndarray) -> np.ndarray:
+        X_new = np.asarray(X_new, dtype=float).ravel()
+        return _bspline_design_matrix(X_new, self.knots, self.degree)
 
-        Penalizes the integral of the squared penorder-th derivative.
 
-        Returns:
-            Penalty matrix, shape (k, k).
-        """
-        # Compute derivatives of basis functions
-        # and build penalty matrix from inner products
-
-        # Simple numerical approach: finite differences
-        S = np.zeros((self.k, self.k))
-
-        # Compute second derivatives numerically
-        h = 1e-4
-        B_base = self.basis_matrix
-
-        # Approximate second derivative via differences
-        X_plus = self.X + h
-        X_minus = self.X - h
-
-        try:
-            # This is simplified; full implementation would use analytical forms
-            # For now, use a basic ridge-like penalty that penalizes complexity
-
-            # Smoothing penalty: penalize basis coeff magnitudes
-            for i in range(self.k):
-                for j in range(i, self.k):
-                    # Simple correlation-based penalty
-                    corr = np.corrcoef(B_base[:, i], B_base[:, j])[0, 1]
-                    if not np.isnan(corr):
-                        S[i, j] = (1 - corr) * (i + j + 1)
-                        S[j, i] = S[i, j]
-
-        except Exception:
-            # Fallback: simple ridge penalty
-            S = np.eye(self.k) * 0.1
-
-        return S
-
-    def summary(self) -> str:
-        """Summary of B-spline basis."""
-        lines = [
-            'B-spline Basis',
-            '=' * 40,
-            f'Observations: {self.n}',
-            f'Basis functions (k): {self.k}',
-            f'Order: {self.order}',
-            f'Penalty order: {self.penorder}',
-            f'Knots: {len(self.knots)}',
-        ]
-        return '\n'.join(lines)
-
+# ---------------------------------------------------------------------------
+# Functional API (backward compat)
+# ---------------------------------------------------------------------------
 
 def bspline_basis_matrix(
     X: np.ndarray,
     k: int = 10,
     order: int = 4,
 ) -> np.ndarray:
-    """Construct B-spline basis matrix.
-
-    Args:
-        X: Input data.
-        k: Number of basis functions.
-        order: B-spline order.
-
-    Returns:
-        Basis matrix, shape (n, k).
-    """
-    basis = BSplineBasis(X, k=k, order=order)
-    return basis.basis_matrix
+    """Construct B-spline basis matrix."""
+    return BSplineBasis(X, k=k, order=order).B
 
 
 def bspline_penalty(k: int, order: int = 4, penorder: int = 2) -> np.ndarray:
-    """Create B-spline penalty matrix.
+    """Create integrated-squared-derivative penalty matrix."""
+    degree = order - 1
+    x_dummy = np.linspace(0, 1, max(k * 3, 30))
+    t = _make_knots(x_dummy, k, degree)
+    return _bspline_integral_penalty(t, degree, penorder)
 
-    Args:
-        k: Number of basis functions.
-        order: B-spline order.
-        penorder: Penalty derivative order.
-
-    Returns:
-        Penalty matrix, shape (k, k).
-    """
-    # Create simple penalty: identity scaled by smoothness
-    # This is a simplified version
-    S = np.zeros((k, k))
-    for i in range(k):
-        for j in range(k):
-            S[i, j] = np.abs(i - j) ** penorder
-    return S

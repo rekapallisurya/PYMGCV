@@ -152,7 +152,8 @@ class TestGAMClass:
         n = 50
         x1 = np.linspace(0, 1, n)
         exposure = np.ones(n) * 100
-        y = np.random.poisson(exposure * np.sin(2 * np.pi * x1))
+        # Use positive rates: 0.5 + 0.3*sin ensures range [0.2, 0.8] > 0
+        y = np.random.poisson(exposure * (0.5 + 0.3 * np.sin(2 * np.pi * x1)))
 
         data = pd.DataFrame({'x1': x1, 'y': y, 'exposure': exposure})
 

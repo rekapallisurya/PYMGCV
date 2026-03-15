@@ -21,11 +21,13 @@ class SmoothSpec:
     """Specification for a single smooth term in a GAM.
 
     Attributes:
-        term_type: Basis type ('s', 'te', 'ti', 're', 'tp', 'cc', etc.)
+        term_type: Basis type ('s', 'te', 'ti', 're', 'tp', 'cc', 't2', etc.)
         variables: List of variable names involved in the smooth.
-        basis: Basis system ('tp', 'cs', 'ts', etc.). Default 'tp' for TPRS.
+        basis: Basis system ('tp', 'cs', 'cc', 're', 'bs', etc.). Default 'tp'.
         k: Basis dimension (number of knots). None means auto-select.
         m: Smoothness order for splines (e.g., m=(2,1) for cubic).
+        by_variable: Name of by-variable for varying-coefficient models.
+        fx: If True, basis is fixed (unpenalized).
         bs_args: Additional basis-specific arguments as dict.
         label: Optional descriptive label.
 
@@ -34,11 +36,13 @@ class SmoothSpec:
         >>> spec.label = 's(age, k=10)'
     """
 
-    term_type: str  # 's', 'te', 'ti', 're', 'tp', 'cc'
+    term_type: str  # 's', 'te', 'ti', 're', 'tp', 'cc', 't2'
     variables: list[str]
     basis: str = 'tp'  # thin plate regression spline
     k: int | None = None
     m: tuple[int, int] | None = None
+    by_variable: str | None = None  # for s(x, by=group)
+    fx: bool = False  # fixed (unpenalized) basis
     bs_args: dict[str, Any] = field(default_factory=dict)
     label: str = ''
 
@@ -47,7 +51,8 @@ class SmoothSpec:
         if not self.label:
             var_str = ', '.join(self.variables)
             k_str = f', k={self.k}' if self.k is not None else ''
-            self.label = f'{self.term_type}({var_str}, basis={self.basis}{k_str})'
+            by_str = f', by={self.by_variable}' if self.by_variable else ''
+            self.label = f'{self.term_type}({var_str}, basis={self.basis}{k_str}{by_str})'
 
 
 @dataclass
@@ -92,9 +97,9 @@ class FormulaParser:
         function_terms: Dict mapping variable names to function calls.
     """
 
-    # Regex patterns
+    # Regex patterns — match s, te, ti, t2, re terms
     SMOOTH_PATTERN = re.compile(
-        r'([st][ie]?)\s*\(\s*([^)]+)\s*\)',
+        r'(t2|te|ti|re|s)\s*\(\s*([^)]+)\s*\)',
         re.IGNORECASE
     )
     FUNCTION_PATTERN = re.compile(
@@ -220,8 +225,8 @@ class FormulaParser:
         if not variables:
             return None
 
-        # Extract basis, k, m from kwargs
-        basis = kwargs.pop('basis', 'tp')
+        # Extract basis, k, m, by, fx from kwargs
+        basis = kwargs.pop('basis', kwargs.pop('bs', 'tp'))
         k = kwargs.pop('k', None)
         if k is not None:
             try:
@@ -230,6 +235,16 @@ class FormulaParser:
                 k = None
 
         m = kwargs.pop('m', None)
+        by_variable = kwargs.pop('by', None)
+        fx_raw = kwargs.pop('fx', 'false')
+        fx = str(fx_raw).lower() in ('true', '1', 'yes')
+
+        # For re() terms, default basis to 're'
+        if term_type == 're':
+            basis = 're'
+        # For t2/te/ti, basis refers to marginal basis type
+        elif term_type in ('te', 'ti', 't2') and basis == 'tp':
+            basis = 'tp'
 
         return SmoothSpec(
             term_type=term_type,
@@ -237,6 +252,8 @@ class FormulaParser:
             basis=basis,
             k=k,
             m=m,
+            by_variable=by_variable,
+            fx=fx,
             bs_args=kwargs
         )
 
