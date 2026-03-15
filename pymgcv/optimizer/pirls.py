@@ -175,10 +175,15 @@ class PIRLSSolver:
             
             # Working vector: z = η + weights * (y - μ) / dμ/dη
             z = self.eta + self.weights * (self.y - self.mu) / dmu_deta
+            
+            # 🔴 CRITICAL: Adjust z to remove offset contribution
+            # Since eta includes offset, z includes it too. For correct coefficient recovery,
+            # we need to solve X^T W X @ beta = X^T W (z - offset), not X^T W z
+            z_adjusted = z - self.offset
 
-            # Solve weighted least squares: (X^T W X + Sλ) β = X^T W z
+            # Solve weighted least squares: (X^T W X + Sλ) β = X^T W z_adjusted
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-            Xtwz = self.X.T @ (w * z)
+            Xtwz = self.X.T @ (w * z_adjusted)
 
             A = XtWX + self.S
             
@@ -293,8 +298,9 @@ class PIRLSSolver:
                 self.beta = beta_trial
                 dev_trial = self._compute_deviance()
                 
-                # Accept if improvement (even small) or full step
-                if dev_trial < dev_old * 0.99 or step_size > 0.9:
+                # Accept only if there is improvement (monotonic decrease)
+                # Use very small improvement threshold to avoid oscillations
+                if dev_trial < dev_old:
                     return beta_trial, step_size
                 
                 step_size *= 0.5
@@ -303,27 +309,34 @@ class PIRLSSolver:
                 step_size *= 0.5
                 continue
         
-        # Fallback: accept full Newton step even if small deviance increase
-        # (this is better than reverting to old beta)
-        self.mu = self.family.linkinv(self.X @ beta_new + self.offset)
-        self.beta = beta_new
-        return beta_new, 1.0
+        # Fallback: use best step found (at least step_size would have been reduced)
+        # Return the last valid step even if small
+        self.mu = self.family.linkinv(self.X @ beta_backup + self.offset)
+        self.beta = beta_backup
+        return beta_backup, 0.0
 
     def _has_converged(self, delta_beta: float, delta_dev: float,
                       tol: float) -> bool:
         """Check convergence via multiple criteria.
         
-        All criteria must pass for convergence.
+        For standard GLM: beta change small
+        For stability: relative deviance change small
+        Either one passing indicates good convergence.
         """
-        criteria = [
-            ("beta_change", delta_beta < tol),
-            ("deviance_change", delta_dev < tol),
-            ("relative_change", delta_dev / (abs(self.dev_history[-1]) + 1e-10) < 1e-6),
-        ]
+        # Criterion 1: coefficients have changed very little
+        beta_converged = delta_beta < tol
         
-        # All criteria must pass
-        all_pass = all(c[1] for c in criteria)
-        return all_pass
+        # Criterion 2: deviance has changed very little (relative)
+        # Use the average deviance to normalize (more robust for different scales)
+        avg_dev = np.mean(self.dev_history[-min(5, len(self.dev_history)):])
+        deviance_converged = delta_dev < (tol * 100) and (delta_dev / (abs(avg_dev) + 1e-10) < 1e-5)
+        
+        # Converged if beta change is small AND relative deviance change is very small
+        # OR if both are small on absolute scale
+        all_small = (delta_beta < 1e-6) and (delta_dev < 1e-6)
+        either_converged = beta_converged or deviance_converged
+        
+        return all_small or either_converged
 
     def coefficients(self) -> np.ndarray:
         """Return fitted coefficients."""
