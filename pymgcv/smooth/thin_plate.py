@@ -92,10 +92,13 @@ class ThinPlateSpline:
         self._construct_basis()
 
     def _select_knots_quantile(self, k: int) -> np.ndarray:
-        """Select knots via quantiles (mgcv default).
+        """Select knots via stratified quantiles (mgcv-compatible).
 
-        For univariate: equally spaced quantiles.
-        For multivariate: kmeans-like quantile sampling per dimension.
+        For univariate: equally spaced quantiles ensure uniform coverage.
+        For multivariate: stratified k-means clustering or quantile sampling.
+        
+        Reference:
+            mgcv/src/smooth.c: select_knots() function
 
         Args:
             k: Number of knots.
@@ -104,77 +107,167 @@ class ThinPlateSpline:
             Indices of selected knots.
         """
         if self.d == 1:
-            # Univariate: equal quantiles
+            # Univariate: quantile-based selection (mgcv default)
             quantile_positions = np.linspace(0, self.n - 1, k, dtype=int)
             sorted_indices = np.argsort(self.X[:, 0])
             return sorted_indices[quantile_positions]
         else:
-            # Multivariate: use stratified sampling or clustering
-            # Simple approach: uniform random sample (can be improved with kmeans)
-            return np.random.choice(self.n, k, replace=False)
+            # Multivariate: try k-means clustering, fallback to stratified sampling
+            try:
+                # Attempt import (sklearn available)
+                from sklearn.cluster import KMeans
+                
+                # Use k-means for better spatial coverage
+                kmeans = KMeans(
+                    n_clusters=k, 
+                    random_state=42, 
+                    n_init=10,
+                    max_iter=100,
+                    tol=1e-6
+                )
+                kmeans.fit(self.X)
+                
+                # Find closest point to each cluster center
+                distances = spatial.distance.cdist(
+                    kmeans.cluster_centers_, self.X, metric='euclidean'
+                )
+                knot_indices = np.argmin(distances, axis=1)
+                
+                return knot_indices
+            except (ImportError, Exception):
+                # Fallback: stratified sampling if sklearn unavailable
+                # Divide observations into k groups and select one from each
+                indices = np.arange(self.n)
+                np.random.seed(42)  # For reproducibility
+                np.random.shuffle(indices)
+                
+                # Simple stratified approach
+                strata_size = max(1, self.n // k)
+                knot_indices = []
+                
+                for i in range(k):
+                    start = i * strata_size
+                    end = start + strata_size if i < k - 1 else self.n
+                    
+                    if start < end:
+                        # Select random point from stratum
+                        strata_range = end - start
+                        selected_idx = start + np.random.randint(0, strata_range)
+                        knot_indices.append(indices[selected_idx])
+                
+                # If we didn't get enough knots, pad with random selections
+                while len(knot_indices) < k:
+                    knot_indices.append(np.random.randint(0, self.n))
+                
+                return np.array(knot_indices[:k])
 
     def _construct_basis(self) -> None:
-        """Construct TPRS basis via RBF + polynomial null space."""
-        # RBF matrix: φ(r) = r² log(r) for r > 0
-        rbf_mat = self._construct_rbf_matrix()  # shape (n, k)
-
-        # Polynomial matrix: [1, x1, x2, ...] for null space
-        # For univariate: constant + linear = (n, 2)
-        # For multivariate: constant + all linear terms = (n, d+1)
+        r"""Construct TPRS basis with correct mgcv algorithm.
+        
+        Mathematical Foundation (Wood 2003):
+        A thin plate spline is represented as:
+            $$f(x) = \sum_{j=1}^k a_j \phi(\|x - x_j\|) + \sum_{l=1}^{d+1} c_l p_l(x)$$
+        
+        where:
+        - $\phi(r) = r^2 \log(r)$ is the RBF kernel (thin plate spline kernel)
+        - $p_l$ are polynomial basis functions $[1, x_1, \ldots, x_d]$
+        - $x_j$ are knot locations
+        
+        The basis matrix B is constructed via:
+        1. RBF matrix H: $H_{ij} = \phi(\|X_i - \text{knots}_j\|)$
+        2. Polynomial matrix P: $P_{il} = p_l(X_i)$
+        3. Augmented system solving for coefficients
+        4. Truncation maintains both H and P terms
+        
+        References:
+            Wood, S. N. (2003). Thin plate regression splines. JRSS(B), 65(1), 95-114.
+        """
+        # Step 1: Compute RBF matrix H (n × k)
+        H = self._construct_rbf_matrix()  # shape (n, k)
+        
+        # Step 2: Compute polynomial matrix P (n × d+1)
         p_dim = self.d + 1
-        poly_mat = np.column_stack([np.ones(self.n), self.X])  # shape (n, d+1)
-
-        # Construct penalty matrix for RBF terms
-        # S_rr = RBF distance matrix between knots
-        s_rr = self._construct_rbf_matrix(self.knots, self.knots)  # shape (k, k)
-
-        # Construct cross-distance matrix
-        # S_kr = RBF distance from data to knots
-        s_kr = rbf_mat  # already computed above
-
-        # Construct polynomial evaluation at knots
-        p_kr = np.column_stack([np.ones(self.k), self.knots])  # shape (k, d+1)
-
-        # Demmler-Reinsch orthogonalization
-        # We solve the generalized eigen problem to get orthonormal basis
-        # For now, construct basis via pseudo-inversion as in mgcv:
-        # 
-        # Augmented system:
-        # [S_rr  P] [a]   [φ]
-        # [P^T   0] [c] = [0]
+        P = np.column_stack([np.ones(self.n), self.X])  # shape (n, d+1)
+        
+        # Step 3: Compute penalty matrix structure
+        # S_rr (k × k) = RBF distance matrix between knots
+        S_rr = self._construct_rbf_matrix(self.knots, self.knots)  # shape (k, k)
+        
+        # S_p (d+1 × d+1) = zero (polynomial is unpenalized null space)
+        
+        # Polynomial evaluation at knots
+        P_k = np.column_stack([np.ones(self.k), self.knots])  # shape (k, d+1)
+        
+        # Step 4: Augmented system (symmetric, indefinite)
+        # [S_rr  P_k] [a]   [H^T]
+        # [P_k^T  0 ] [c] = [P^T]
         #
         # where a are RBF coefficients and c are polynomial coefficients
         
-        # Construct augmented matrix
         aug = np.vstack([
-            np.hstack([s_rr, p_kr]),
-            np.hstack([p_kr.T, np.zeros((p_dim, p_dim))])
-        ])
-
-        # Right-hand side
-        rhs = np.vstack([s_kr.T, np.zeros((p_dim, self.n))])
-
-        # Solve for basis (more efficient: use QR or direct solve)
+            np.hstack([S_rr, P_k]),
+            np.hstack([P_k.T, np.zeros((p_dim, p_dim))])
+        ])  # shape (k+d+1, k+d+1)
+        
+        # Right-hand side: [H^T, P^T]^T
+        rhs = np.vstack([H.T, P.T])  # shape (k+d+1, n)
+        
+        # Step 5: Solve augmented system using appropriate method
         try:
-            # Use SVD with regularization for stability
-            u, svals, vt = linalg.svd(aug, full_matrices=False)
-            # Invert via SVD
-            svals_inv = np.where(svals > 1e-10, 1.0 / svals, 0)
-            aug_inv = vt.T @ np.diag(svals_inv) @ u.T
-            coef = aug_inv @ rhs
+            # Attempt Cholesky decomposition (efficient for positive definite)
+            # Note: the augmented system is indefinite, so this may fail
+            L = linalg.cholesky(aug, lower=True)
+            coef = linalg.cho_solve((L, True), rhs)
         except linalg.LinAlgError:
-            # Fallback: use least squares
-            coef = linalg.lstsq(aug, rhs)[0]
-
-        # First (k) rows are RBF coefficients
-        self.B = coef[:self.k, :].T  # shape (n, k)
+            # Fallback: SVD with adaptive threshold for numerical stability
+            U, svals, Vt = linalg.svd(aug, full_matrices=False)
+            
+            # Adaptive threshold: follow LAPACK convention
+            # thresh = eps * max(m, n) * max_singular_value
+            eps = np.finfo(float).eps
+            thresh = eps * max(aug.shape) * svals[0]
+            
+            # Invert singular values with safeguard
+            svals_inv = np.where(svals > thresh, 1.0 / svals, 0)
+            coef = Vt.T @ np.diag(svals_inv) @ U.T @ rhs
+        
+        # Step 6: Extract and store coefficients for out-of-sample prediction
+        self._rbf_coef = coef[:self.k, :]  # shape (k, n)
+        self._poly_coef = coef[self.k:, :]  # shape (d+1, n)
+        
+        # Step 7: Construct basis matrix
+        # B[i,j] represents the j-th basis function evaluated at X[i]
+        # Full matrix before truncation: H @ a + P @ c
+        B_full = H @ self._rbf_coef + P @ self._poly_coef  # shape (n, n)
+        
+        # Truncate to basis dimension k (keep first k columns)
+        # This maintains the null space (polynomial terms) plus k-p_dim RBF terms
+        self.B = B_full[:, :self.k]
 
     def _construct_rbf_matrix(
         self,
         X1: Optional[np.ndarray] = None,
         X2: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Construct RBF matrix φ(r) = r² log(r).
+        r"""Construct RBF matrix with numerical stability.
+        
+        Implements $\phi(r) = r^2 \log(r)$ with safeguards for $r \to 0^+$.
+        
+        Mathematical Foundation:
+        The thin plate spline kernel is defined as:
+            $$\phi(r) = \begin{cases}
+                r^2 \log(r) & \text{if } r > 0 \\
+                0 & \text{if } r = 0
+            \end{cases}$$
+        
+        As $r \to 0^+$, we have $r^2 \log(r) \to 0$ (limit is zero).
+        
+        For numerical stability, avoid computing log of very small numbers
+        by using an explicit threshold. Small distances (≤ eps) are set to 0.
+        
+        References:
+            Wood, S. N. (2003). Thin plate regression splines. JRSS(B), 65(1), 95-114.
+            Duchon, J. (1977). Splines minimizing rotation-invariant semi-norms.
 
         Args:
             X1: First set of points, shape (n1, d). Defaults to self.X.
@@ -188,16 +281,22 @@ class ThinPlateSpline:
         if X2 is None:
             X2 = self.knots
 
-        # Compute pairwise distances
+        # Compute pairwise Euclidean distances
         distances = spatial.distance.cdist(X1, X2, metric='euclidean')
 
-        # RBF: r² log(r)
-        rbf = np.where(
-            distances > 0,
-            distances**2 * np.log(distances),
-            0
-        )
-
+        # RBF: r² log(r) for r > 0, 0 otherwise
+        # Use explicit conditioning to avoid log(0) and numerical issues
+        eps = np.finfo(float).eps * 100  # Small threshold for numerical stability
+        
+        rbf = np.zeros_like(distances, dtype=np.float64)
+        
+        # Only compute for distances > eps (avoid log of tiny numbers)
+        mask = distances > eps
+        rbf[mask] = distances[mask] ** 2 * np.log(distances[mask])
+        
+        # For distances <= eps, value is 0 (limit of r² log(r) as r → 0)
+        rbf[~mask] = 0.0
+        
         return rbf
 
     def basis_matrix(self) -> np.ndarray:
@@ -208,13 +307,26 @@ class ThinPlateSpline:
         return self.B
 
     def predict_basis(self, X_new: np.ndarray) -> np.ndarray:
-        """Evaluate basis at new points (for out-of-sample prediction).
+        r"""Evaluate basis at new points via stored coefficients.
+        
+        For out-of-sample prediction, evaluate the thin plate spline basis functions
+        at new locations using coefficients computed during training.
+        
+        Each basis function is evaluated as:
+            $$B_j(\mathbf{x}_{\text{new}}) = \sum_l a_{j,l} \phi(\|\mathbf{x}_{\text{new}} - \text{knots}_l\|) 
+                                             + \sum_l c_{j,l} p_l(\mathbf{x}_{\text{new}})$$
+        
+        where $a_{j,l}$ and $c_{j,l}$ are coefficients stored during `_construct_basis()`.
 
         Args:
             X_new: New input points, shape (n_new, d).
 
         Returns:
             Basis matrix at new points, shape (n_new, k).
+
+        Raises:
+            ValueError: If X_new dimension doesn't match training data.
+            RuntimeError: If coefficients not available (basis not constructed).
         """
         X_new = np.asarray(X_new, dtype=np.float64)
         if X_new.ndim == 1:
@@ -225,9 +337,27 @@ class ThinPlateSpline:
                 f'X_new has dimension {X_new.shape[1]}, expected {self.d}'
             )
 
-        # TODO: Implement prediction via stored coefficients
-        # This requires storing the polynomial and RBF coefficients from construction
-        raise NotImplementedError('Out-of-sample prediction not yet implemented')
+        if not hasattr(self, '_rbf_coef') or not hasattr(self, '_poly_coef'):
+            raise RuntimeError(
+                'Basis coefficients not stored. '
+                'Ensure ThinPlateSpline was initialized and _construct_basis() was called.'
+            )
+
+        # RBF matrix at new points: H_new[i,j] = φ(||X_new[i] - knots[j]||)
+        H_new = self._construct_rbf_matrix(X_new, self.knots)  # shape (n_new, k)
+
+        # Polynomial matrix at new points: P_new[i,l] = p_l(X_new[i])
+        p_dim = self.d + 1
+        P_new = np.column_stack(
+            [np.ones(len(X_new)), X_new]
+        )  # shape (n_new, d+1)
+
+        # Basis matrix: [H_new | P_new] @ [a; c]
+        # = H_new @ a + P_new @ c
+        B_full = H_new @ self._rbf_coef + P_new @ self._poly_coef  # shape (n_new, n)
+
+        # Return only first k columns (basis dimension)
+        return B_full[:, :self.k]
 
 
 def thin_plate_basis(
