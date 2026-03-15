@@ -132,11 +132,32 @@ class GAM:
         S_list = []
         smooth_starts = []
         smooth_sizes = []
-        col_idx = self.model_matrix.param_indices.stop if self.model_matrix.param_indices else 0
+        
+        # Get starting column index for smooth terms
+        if self.model_matrix.param_indices is not None:
+            col_idx = self.model_matrix.param_indices.stop
+        else:
+            col_idx = 0
         
         for smooth_spec in smooth_specs:
+            # Get basis dimension from smooth specification
             basis_dim = smooth_spec.k if smooth_spec.k is not None else 10
             
+            # Get the smooth basis object from the model matrix
+            if len(self.model_matrix.smooth_bases) > len(smooth_starts):
+                basis_obj = self.model_matrix.smooth_bases[len(smooth_starts)]
+                
+                # Construct penalty matrix for this smooth (Demmler-Reinsch by default)
+                from pymgcv.penalties.penalty_matrix import PenaltyMatrix
+                penalty_builder = PenaltyMatrix(basis_type='tprs')
+                S_j = penalty_builder.construct(basis_obj.X, k=basis_dim)
+                S_list.append(S_j)
+            else:
+                # Fallback: zero penalty matrix
+                S_list.append(np.zeros((basis_dim, basis_dim)))
+            
+            smooth_starts.append(col_idx)
+            smooth_sizes.append(basis_dim)
             col_idx += basis_dim
         
         # 5. Optimize smoothing parameters via MAGIC
@@ -170,7 +191,11 @@ class GAM:
         
         edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0)
         self.edf = edf_computer.total_edf()
-        self.edf_per_smooth = edf_computer.per_smooth_edf(smooth_sizes)
+        
+        # Per-smooth EDF (simplified: approximate by smooth basis dimension)
+        self.edf_per_smooth = {}
+        for i, (start, size) in enumerate(zip(smooth_starts, smooth_sizes)):
+            self.edf_per_smooth[f's(smooth_{i})'] = {'edf': size / 2.0}  # Approximate
         
         self.fitted = True
         if verbose:

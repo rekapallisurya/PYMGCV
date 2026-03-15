@@ -187,7 +187,13 @@ class MAGICOptimizer:
                 self.lambda_log += alpha * d_log_lambda
 
             # Convergence check
-            if np.max(np.abs(alpha * d_log_lambda)) < outer_tol:
+            if len(d_log_lambda) == 0:
+                # No smoothing parameters (parametric-only model)
+                self.converged = True
+                if verbose:
+                    print('Parametric-only model (no smooth terms)')
+                break
+            elif np.max(np.abs(alpha * d_log_lambda)) < outer_tol:
                 self.converged = True
                 if verbose:
                     print(f'Converged after {outer_it + 1} outer iterations')

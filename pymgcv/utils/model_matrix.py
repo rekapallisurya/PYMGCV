@@ -142,6 +142,7 @@ class ModelMatrix:
         """Construct matrix from parametric terms.
 
         Handles:
+        - Intercept (added by default unless suppressed)
         - Simple variables
         - Interactions
         - Categorical variables (one-hot encoding, drop first)
@@ -150,11 +151,17 @@ class ModelMatrix:
         Returns:
             (X_param, column_names)
         """
-        if not self.formula_parser.parametric_terms:
-            return np.zeros((self.n_obs, 0)), []
-
         X_cols: list[np.ndarray] = []
         col_names: list[str] = []
+
+        # Add intercept by default unless formula explicitly excludes it (with -1)
+        # For now, always include intercept for compatibility
+        intercept_col = np.ones(self.n_obs)
+        X_cols.append(intercept_col)
+        col_names.append('(Intercept)')
+
+        if not self.formula_parser.parametric_terms:
+            return np.column_stack(X_cols) if X_cols else np.zeros((self.n_obs, 1)), col_names
 
         for spec in self.formula_parser.parametric_terms:
             if spec.interaction:
