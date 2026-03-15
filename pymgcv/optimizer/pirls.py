@@ -55,6 +55,7 @@ class PIRLSSolver:
         lambda_vec: Optional[np.ndarray] = None,
         offset: Optional[np.ndarray] = None,
         dispersion: float = 1.0,
+        weights: Optional[np.ndarray] = None,
     ) -> None:
         """Initialize PIRLS solver.
 
@@ -66,12 +67,14 @@ class PIRLSSolver:
             lambda_vec: Smoothing parameters.
             offset: Offset vector.
             dispersion: Dispersion parameter.
+            weights: Observation weights (optional).
         """
         self.X = np.asarray(X, dtype=np.float64)
         self.y = np.asarray(y, dtype=np.float64)
         self.family = family
         self.S_list = [np.asarray(S, dtype=np.float64) for S in S_list]
-        self.offset = np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
+        self.offset = self._validate_offset(offset, len(y))
+        self.weights = self._validate_weights(weights, len(y))
         self.dispersion = float(dispersion)
 
         if lambda_vec is None:
@@ -89,9 +92,46 @@ class PIRLSSolver:
         self.converged = False
         self.iterations = 0
         self.history: list[dict] = []
+        self.dev_history: list[float] = []  # Deviance history for monitoring
 
         # Construct combined penalty
         self.S = self._construct_combined_penalty()
+
+    def _validate_offset(self, offset: Optional[np.ndarray], n: int) -> np.ndarray:
+        """Validate and handle offset parameter."""
+        if offset is None:
+            return np.zeros(n)
+        
+        offset = np.asarray(offset, dtype=np.float64)
+        
+        if len(offset) != n:
+            raise ValueError(f"Offset length {len(offset)} != n={n}")
+        
+        # Handle infinite offsets
+        if not np.all(np.isfinite(offset)):
+            offset = np.where(np.isfinite(offset), offset, 0.0)
+        
+        return offset
+
+    def _validate_weights(self, weights: Optional[np.ndarray], n: int) -> np.ndarray:
+        """Validate and handle weights parameter."""
+        if weights is None:
+            return np.ones(n)
+        
+        weights = np.asarray(weights, dtype=np.float64)
+        
+        if len(weights) != n:
+            raise ValueError(f"Weights length {len(weights)} != n={n}")
+        
+        # Ensure positive weights
+        if np.any(weights <= 0):
+            raise ValueError("Weights must be positive")
+        
+        # Handle infinite weights
+        if not np.all(np.isfinite(weights)):
+            weights = np.where(np.isfinite(weights), weights, 1.0)
+        
+        return weights
 
     def _construct_combined_penalty(self) -> np.ndarray:
         """Construct combined penalty Sλ = Σⱼ λⱼ Sⱼ."""
@@ -106,7 +146,7 @@ class PIRLSSolver:
         tol: float = 1e-7,
         verbose: bool = False,
     ) -> np.ndarray:
-        """Solve GAM via PIRLS.
+        """Solve GAM via PIRLS with line search stabilization.
 
         Args:
             max_iter: Maximum iterations.
@@ -125,11 +165,16 @@ class PIRLSSolver:
             dmu_deta = self.family.dmu_deta(self.eta)
             var_mu = self.family.variance(self.mu, self.dispersion)
             
-            # Weight matrix: w_i = (dμ/dη)² / Var(Y)
-            w = (dmu_deta**2) / var_mu
+            # Handle zero/very small variances
+            var_mu = np.maximum(var_mu, 1e-10)
+            dmu_deta = np.where(np.abs(dmu_deta) < 1e-10, 1e-10, dmu_deta)
             
-            # Working vector: z = η + (y - μ) / dμ/dη
-            z = self.eta + (self.y - self.mu) / dmu_deta
+            # Weighted least squares: include observation weights
+            # w_i = weights_i * (dμ/dη)² / Var(Y)
+            w = self.weights * (dmu_deta**2) / var_mu
+            
+            # Working vector: z = η + weights * (y - μ) / dμ/dη
+            z = self.eta + self.weights * (self.y - self.mu) / dmu_deta
 
             # Solve weighted least squares: (X^T W X + Sλ) β = X^T W z
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
@@ -143,8 +188,26 @@ class PIRLSSolver:
                 # Singular system: use least-squares solver
                 beta_new = linalg.lstsq(A, Xtwz)[0]
 
-            # Check convergence
+            # 🔴 NEW: Line search for stability
+            beta_new, step_size = self._line_search(
+                self.beta, beta_new, self.eta
+            )
+            
+            # Check for NaN/Inf
+            if not np.all(np.isfinite(beta_new)):
+                if verbose:
+                    print(f"⚠️  Iteration {it}: Non-finite beta detected, reverting")
+                beta_new = self.beta  # Use previous beta
+                step_size = 0
+
+            # 🔴 NEW: Improved convergence check (multiple criteria)
+            dev = self._compute_deviance()
             delta_beta = np.max(np.abs(beta_new - self.beta))
+            
+            if len(self.dev_history) > 0:
+                delta_dev = abs(dev - self.dev_history[-1])
+            else:
+                delta_dev = float('inf')
             
             # Track history
             obj = self._compute_objective()
@@ -153,26 +216,29 @@ class PIRLSSolver:
                 'delta_beta': delta_beta,
                 'objective': obj,
                 'beta_norm': np.linalg.norm(beta_new),
+                'step_size': step_size,
+                'deviance': dev,
             })
+            self.dev_history.append(dev)
             
             if verbose:
                 print(
                     f'Iter {it:2d}: Δβ = {delta_beta:.6e}, '
-                    f'Obj = {obj:.6e}'
+                    f'ΔDev = {delta_dev:.6e}, step_size = {step_size:.2f}'
                 )
 
             self.beta = beta_new
 
-            # Convergence check
-            if delta_beta < tol:
+            # 🔴 NEW: Convergence check (all criteria must pass)
+            if self._has_converged(delta_beta, delta_dev, tol):
                 self.converged = True
                 self.iterations = it + 1
                 if verbose:
-                    print(f'Converged after {self.iterations} iterations')
+                    print(f'✓ Converged after {self.iterations} iterations')
                 break
 
         if not self.converged and verbose:
-            print(f'Warning: Did not converge after {max_iter} iterations')
+            print(f'⚠️  Warning: Did not converge after {max_iter} iterations')
 
         self.iterations = it + 1
         return self.beta
@@ -182,9 +248,82 @@ class PIRLSSolver:
 
         L(β) = deviance + βᵀ Sλ β
         """
-        deviance = -2 * self.family.loglik(self.y, self.mu, self.dispersion)
+        deviance = self._compute_deviance()
         penalty = self.beta @ self.S @ self.beta
         return deviance + penalty
+
+    def _compute_deviance(self) -> float:
+        """Compute deviance (unpenalized)."""
+        return -2 * self.family.loglik(self.y, self.mu, self.dispersion)
+
+    def _line_search(self, beta_old: np.ndarray, beta_new: np.ndarray,
+                     eta_old: np.ndarray, max_trials: int = 10) -> tuple:
+        """Perform backtracking line search for step size.
+        
+        Returns:
+            (beta_final, step_size) tuple
+        """
+        step_size = 1.0
+        beta_direction = beta_new - beta_old
+        
+        # Store current state
+        mu_old = self.mu.copy()
+        beta_backup = self.beta.copy()
+        dev_old = self._compute_deviance()
+        
+        for trial in range(max_trials):
+            # Trial step
+            beta_trial = beta_old + step_size * beta_direction
+            eta_trial = self.X @ beta_trial + self.offset
+            
+            # Check if eta is in valid range
+            eta_max = 100  # Prevent overflow in link functions
+            if np.any(np.abs(eta_trial) > eta_max):
+                step_size *= 0.5
+                continue
+            
+            # Evaluate deviance
+            try:
+                mu_trial = self.family.linkinv(eta_trial)
+                if np.any(mu_trial <= 0) or not np.all(np.isfinite(mu_trial)):
+                    step_size *= 0.5
+                    continue
+                
+                self.mu = mu_trial
+                self.beta = beta_trial
+                dev_trial = self._compute_deviance()
+                
+                # Accept if improvement (even small) or full step
+                if dev_trial < dev_old * 0.99 or step_size > 0.9:
+                    return beta_trial, step_size
+                
+                step_size *= 0.5
+            except (ValueError, FloatingPointError):
+                # Evaluation error, try smaller step
+                step_size *= 0.5
+                continue
+        
+        # Fallback: accept full Newton step even if small deviance increase
+        # (this is better than reverting to old beta)
+        self.mu = self.family.linkinv(self.X @ beta_new + self.offset)
+        self.beta = beta_new
+        return beta_new, 1.0
+
+    def _has_converged(self, delta_beta: float, delta_dev: float,
+                      tol: float) -> bool:
+        """Check convergence via multiple criteria.
+        
+        All criteria must pass for convergence.
+        """
+        criteria = [
+            ("beta_change", delta_beta < tol),
+            ("deviance_change", delta_dev < tol),
+            ("relative_change", delta_dev / (abs(self.dev_history[-1]) + 1e-10) < 1e-6),
+        ]
+        
+        # All criteria must pass
+        all_pass = all(c[1] for c in criteria)
+        return all_pass
 
     def coefficients(self) -> np.ndarray:
         """Return fitted coefficients."""
@@ -246,6 +385,7 @@ def solve_pirls(
     lambda_vec: Optional[np.ndarray] = None,
     offset: Optional[np.ndarray] = None,
     dispersion: float = 1.0,
+    weights: Optional[np.ndarray] = None,
     max_iter: int = 25,
     tol: float = 1e-7,
 ) -> tuple[np.ndarray, bool]:
@@ -259,6 +399,7 @@ def solve_pirls(
         lambda_vec: Smoothing parameters.
         offset: Offset.
         dispersion: Dispersion parameter.
+        weights: Observation weights.
         max_iter: Max iterations.
         tol: Convergence tolerance.
 
@@ -270,6 +411,7 @@ def solve_pirls(
         lambda_vec=lambda_vec,
         offset=offset,
         dispersion=dispersion,
+        weights=weights,
     )
     beta = solver.solve(max_iter=max_iter, tol=tol, verbose=False)
     return beta, solver.converged
