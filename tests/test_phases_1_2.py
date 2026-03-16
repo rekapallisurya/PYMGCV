@@ -69,14 +69,14 @@ class TestThinPlateSpline:
         tprs = ThinPlateSpline(X, k=8)
         
         B = tprs.basis_matrix()
-        assert B.shape == (50, 8)
+        assert B.shape == (50, 7)  # k-1 after identifiability constraint
         assert np.all(np.isfinite(B))
 
     def test_functional_api(self) -> None:
         """Test functional API for basis."""
         X = np.random.randn(30, 1)
         B = thin_plate_basis(X, k=5)
-        assert B.shape == (30, 5)
+        assert B.shape == (30, 4)  # k-1 after identifiability constraint
 
 
 class TestDesignMatrix:

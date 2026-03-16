@@ -81,8 +81,15 @@ class MAGICOptimizer:
 
         self.n_smooth = len(S_list)
 
-        # Initial smoothing parameters (log scale)
-        self.lambda_log = np.zeros(self.n_smooth)  # log(λ) ≈ 0 → λ ≈ 1
+        # Initialize smoothing parameters based on data-penalty ratio
+        # (Wood 2004‐style: balance response variance against penalty size)
+        self.lambda_log = np.zeros(self.n_smooth)
+        y_var = max(np.var(self.y), 1e-10)
+        for j in range(self.n_smooth):
+            eig_max = np.max(np.abs(np.linalg.eigvalsh(self.S_list[j])))
+            if eig_max > 1e-10:
+                lam_init = y_var / eig_max
+                self.lambda_log[j] = np.log(max(lam_init, 1e-10))
         self.lambda_vec = np.exp(self.lambda_log)
 
         self.reml_history: list[float] = []
@@ -200,10 +207,16 @@ class MAGICOptimizer:
             except (linalg.LinAlgError, ValueError):
                 d_log_lambda = -0.01 * grad_log_lambda
 
+            # Clip step size to prevent overflow
+            max_step = 3.0
+            step_scale = np.max(np.abs(d_log_lambda))
+            if step_scale > max_step:
+                d_log_lambda *= max_step / step_scale
+
             # Backtracking line search
             alpha = 1.0
-            for _ in range(5):
-                lambda_log_new = self.lambda_log + alpha * d_log_lambda
+            for _ in range(10):
+                lambda_log_new = np.clip(self.lambda_log + alpha * d_log_lambda, -20, 20)
                 lambda_new = np.exp(lambda_log_new)
                 solver_new = PIRLSSolver(
                     self.X, self.y, self.family, self.S_list,
@@ -218,7 +231,7 @@ class MAGICOptimizer:
                     break
                 alpha *= 0.5
             else:
-                self.lambda_log += alpha * d_log_lambda
+                self.lambda_log = np.clip(self.lambda_log + alpha * d_log_lambda, -20, 20)
 
             if len(d_log_lambda) == 0:
                 self.converged = True
@@ -238,11 +251,12 @@ class MAGICOptimizer:
         )
         beta_final = solver_final.solve(max_iter=max_inner_iter, tol=inner_tol, verbose=False)
         fitted_vals = solver_final.fitted_values()
+        edf = self._compute_edf(beta_final)
         return {
             'coef': beta_final,
             'smooth_lambda': self.lambda_vec,
             'fitted_values': fitted_vals,
-            'edf': len(beta_final) - 5.0,
+            'edf': edf,
         }
 
     def _optimize_gcv(
@@ -320,12 +334,37 @@ class MAGICOptimizer:
             dispersion=self.dispersion,
         )
         beta_final = solver_final.solve(max_iter=max_inner_iter, tol=inner_tol)
+        edf = self._compute_edf(beta_final)
         return {
             'coef': beta_final,
             'smooth_lambda': self.lambda_vec,
             'fitted_values': solver_final.fitted_values(),
-            'edf': len(beta_final) - 5.0,
+            'edf': edf,
         }
+
+    def _compute_edf(self, beta: np.ndarray) -> float:
+        """Compute actual EDF = trace((X'WX + S_lam)^{-1} X'WX).
+
+        Uses p-space influence matrix for O(np^2) computation.
+        """
+        eta = self.X @ beta + self.offset
+        mu = self.family.linkinv(eta)
+        dmu_deta = self.family.dmu_deta(eta)
+        var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
+        w = (dmu_deta ** 2) / var_mu
+
+        S_lam = sum(l * S for l, S in zip(self.lambda_vec, self.S_list))
+        XtWX = self.X.T @ (self.X * w[:, np.newaxis])
+        A = XtWX + S_lam
+
+        # Use Cholesky or pinv for numerical stability
+        try:
+            L = linalg.cholesky(A, lower=True)
+            A_inv_XtWX = linalg.cho_solve((L, True), XtWX)
+        except linalg.LinAlgError:
+            A_inv_XtWX = linalg.lstsq(A, XtWX)[0]
+
+        return float(np.clip(np.trace(A_inv_XtWX), 0, self.X.shape[1]))
 
     def smoothing_parameters(self) -> np.ndarray:
         """Return current smoothing parameters λⱼ."""

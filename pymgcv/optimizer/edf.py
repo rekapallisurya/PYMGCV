@@ -65,7 +65,8 @@ class EDFComputer:
 
         self.n, self.p = self.X.shape
 
-        # Compute hat matrix
+        # Compute influence matrix F (p x p)
+        self.F: Optional[np.ndarray] = None
         self.H: Optional[np.ndarray] = None
         self._compute_hat_matrix()
 
@@ -77,38 +78,35 @@ class EDFComputer:
         self._compute_edf()
 
     def _compute_hat_matrix(self) -> None:
-        """Compute penalized hat matrix H.
+        """Compute the p x p influence matrix F = A^{-1} X^T W X.
 
-        For Gaussian: H = X (X^T X + S)^{-1} X^T
+        EDF = trace(F), which equals trace of the n x n hat matrix H
+        but is computed in O(np^2) instead of O(n^3).
 
-        For GLM (non-Gaussian):
-            Let W be the weight matrix (diagonal).
-            H = X (X^T W X + S)^{-1} X^T W
-
-        The hat matrix shows how fitted values depend on responses.
+        For per-smooth EDF, F[j,j] diagonal entries corresponding to
+        smooth j's columns give the EDF contribution.
         """
-        # Construct X^T W X
         eta = self.X @ self.beta + self.offset
         mu = self.family.linkinv(eta)
         dmu_deta = self.family.dmu_deta(eta)
-        var_mu = self.family.variance(mu, self.dispersion)
-        
+        var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
+
         w = (dmu_deta**2) / var_mu
-        
+
         XtWX = self.X.T @ (self.X * w[:, np.newaxis])
 
-        # Solve (X^T W X + S) = A
         A = XtWX + self.S_combined
 
+        # Use Cholesky for numerical stability, fall back to lstsq
         try:
-            # Compute A^{-1}
-            A_inv = linalg.inv(A)
+            L = linalg.cholesky(A, lower=True)
+            A_inv_XtWX = linalg.cho_solve((L, True), XtWX)
+            self.F = A_inv_XtWX
         except linalg.LinAlgError:
-            # Singular system: use pseudoinverse
-            A_inv = linalg.pinv(A)
-
-        # Hat matrix: H = X A^{-1} X^T W
-        self.H = self.X @ A_inv @ (self.X.T * w[np.newaxis, :])
+            A_inv_XtWX = linalg.lstsq(A, XtWX)[0]
+            self.F = A_inv_XtWX
+        # Store as H for backward compatibility (now p x p, not n x n)
+        self.H = self.F
 
     def _compute_edf(self) -> None:
         """Compute total and smooth-term EDF.
@@ -133,16 +131,16 @@ class EDFComputer:
             smooth_indices: List of slices indicating column ranges for each smooth.
 
         Returns:
-            Dict mapping smooth index → EDF for that smooth.
+            Dict mapping smooth index -> EDF for that smooth.
         """
-        if self.H is None:
+        if self.F is None:
             return {}
 
         edf_dict = {}
         for j, idx in enumerate(smooth_indices):
-            # Sum of diagonal elements in H for this smooth term
-            edf_smooth = np.sum(np.diag(self.H)[idx])
-            edf_dict[j] = edf_smooth
+            # Sum of diagonal elements of F for this smooth's columns
+            edf_smooth = np.sum(np.diag(self.F)[idx])
+            edf_dict[j] = float(edf_smooth)
 
         return edf_dict
 

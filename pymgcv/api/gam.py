@@ -166,10 +166,29 @@ class GAM:
                     S_list.append(P_embed)
                     smooth_starts.append(s_start)
                     smooth_sizes.append(actual_basis_dim)
-            elif hasattr(basis_obj, 'S'):
-                # Random effect or cyclic spline: use .S directly
+            elif hasattr(basis_obj, 'S') and basis_obj.S is not None:
+                # ThinPlateSpline, random effect, cyclic spline: use .S directly
                 P_embed = np.zeros((p_total, p_total))
-                P_embed[s_start:s_stop, s_start:s_stop] = basis_obj.S
+                S_obj = basis_obj.S
+                if S_obj.shape == (actual_basis_dim, actual_basis_dim):
+                    P_embed[s_start:s_stop, s_start:s_stop] = S_obj
+                elif actual_basis_dim > S_obj.shape[0]:
+                    # By-variable smooth: replicate penalty block for each level
+                    k_per = S_obj.shape[0]
+                    n_levels = actual_basis_dim // k_per
+                    for lev in range(n_levels):
+                        off = s_start + lev * k_per
+                        P_embed[off:off+k_per, off:off+k_per] = S_obj
+                else:
+                    P_embed[s_start:s_stop, s_start:s_stop] = S_obj[:actual_basis_dim, :actual_basis_dim]
+                S_list.append(P_embed)
+                smooth_starts.append(s_start)
+                smooth_sizes.append(actual_basis_dim)
+            elif hasattr(basis_obj, 'penalty_matrix_S'):
+                # Alternate accessor (e.g. ThinPlateSpline)
+                P_embed = np.zeros((p_total, p_total))
+                S_obj = basis_obj.penalty_matrix_S()
+                P_embed[s_start:s_stop, s_start:s_stop] = S_obj[:actual_basis_dim, :actual_basis_dim]
                 S_list.append(P_embed)
                 smooth_starts.append(s_start)
                 smooth_sizes.append(actual_basis_dim)
@@ -218,19 +237,20 @@ class GAM:
         edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0)
         self.edf = edf_computer.total_edf()
 
-        # Per-smooth EDF
+        # Per-smooth EDF via influence matrix diagonal
         self.edf_per_smooth = {}
-        penalty_idx = 0
-        for i, (start, size) in enumerate(zip(
-            [self.model_matrix.smooth_indices[j].start
-             for j in range(len(self.model_matrix.smooth_indices))],
-            [self.model_matrix.smooth_indices[j].stop - self.model_matrix.smooth_indices[j].start
-             for j in range(len(self.model_matrix.smooth_indices))]
-        )):
+        smooth_slices = []
+        smooth_labels = []
+        for i in range(len(self.model_matrix.smooth_indices)):
+            s = self.model_matrix.smooth_indices[i]
+            smooth_slices.append(s)
             spec = parser.smooth_terms[i] if i < len(parser.smooth_terms) else None
-            label = spec.label if spec else f'smooth_{i}'
-            self.edf_per_smooth[label] = {'edf': max(1.0, size * 0.5)}  # approximate
-            penalty_idx += 1
+            smooth_labels.append(spec.label if spec else f'smooth_{i}')
+
+        if smooth_slices:
+            edf_map = edf_computer.edf_by_smooth(smooth_slices)
+            for i, label in enumerate(smooth_labels):
+                self.edf_per_smooth[label] = {'edf': max(1.0, edf_map.get(i, 1.0))}
 
         # 8. Estimate dispersion parameter
         self.dispersion_ = self._estimate_dispersion()

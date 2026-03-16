@@ -215,8 +215,9 @@ class PIRLSSolver:
             # w_i = weights_i * (dμ/dη)² / Var(Y)
             w = self.weights * (dmu_deta**2) / var_mu
             
-            # Working vector: z = η + weights * (y - μ) / dμ/dη
-            z = self.eta + self.weights * (self.y - self.mu) / dmu_deta
+            # Working vector: z = eta + (y - mu) / (dmu/deta)
+            # Note: observation weights enter only via w, not via z
+            z = self.eta + (self.y - self.mu) / dmu_deta
             
             # 🔴 CRITICAL: Adjust z to remove offset contribution
             # Since eta includes offset, z includes it too. For correct coefficient recovery,
@@ -236,6 +237,7 @@ class PIRLSSolver:
                 beta_new = linalg.lstsq(A, Xtwz)[0]
 
             # 🔴 NEW: Line search for stability
+            beta_old = self.beta.copy()
             beta_new, step_size = self._line_search(
                 self.beta, beta_new, self.eta
             )
@@ -244,12 +246,12 @@ class PIRLSSolver:
             if not np.all(np.isfinite(beta_new)):
                 if verbose:
                     print(f"⚠️  Iteration {it}: Non-finite beta detected, reverting")
-                beta_new = self.beta  # Use previous beta
+                beta_new = beta_old  # Use previous beta
                 step_size = 0
 
             # 🔴 NEW: Improved convergence check (multiple criteria)
             dev = self._compute_deviance()
-            delta_beta = np.max(np.abs(beta_new - self.beta))
+            delta_beta = np.max(np.abs(beta_new - beta_old))
             
             if len(self.dev_history) > 0:
                 delta_dev = abs(dev - self.dev_history[-1])

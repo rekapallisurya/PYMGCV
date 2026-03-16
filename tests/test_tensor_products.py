@@ -104,7 +104,7 @@ def test_te_basis_shape():
         var_names=['x1', 'x2'],
         k_values=[8, 8],
     )
-    assert tps.B.shape == (80, 64), f"Expected (80, 64), got {tps.B.shape}"
+    assert tps.B.shape == (80, 49), f"Expected (80, 49), got {tps.B.shape}"
 
 
 def test_te_penalty_count():
@@ -117,7 +117,7 @@ def test_te_penalty_count():
     )
     pens = tps.penalty_matrices()
     assert len(pens) == 2, f"Expected 2 penalties, got {len(pens)}"
-    assert pens[0].shape == (42, 42)  # 6*7
+    assert pens[0].shape == (30, 30)  # (6-1)*(7-1) = 30
 
 
 def test_te_three_variables():
@@ -126,7 +126,7 @@ def test_te_three_variables():
     n = 50
     data = {'x1': rng.normal(size=n), 'x2': rng.normal(size=n), 'x3': rng.normal(size=n)}
     tps = TensorProductSmooth(data, ['x1', 'x2', 'x3'], k_values=[4, 4, 4])
-    assert tps.B.shape == (n, 64)
+    assert tps.B.shape == (n, 27)
     assert len(tps.penalty_matrices()) == 3
 
 
@@ -137,7 +137,7 @@ def test_te_total_dim():
         {'x1': df['x1'].values, 'x2': df['x2'].values},
         ['x1', 'x2'], k_values=[5, 6]
     )
-    assert tps.total_dim == 30
+    assert tps.total_dim == 20
     assert tps.B.shape[1] == tps.total_dim
 
 

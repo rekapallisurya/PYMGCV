@@ -32,7 +32,8 @@ class TestTPRSBasicFunctionality:
         tprs = ThinPlateSpline(X, k=8)
         B = tprs.basis_matrix()
         
-        assert B.shape == (50, 8), f"Expected shape (50, 8), got {B.shape}"
+        # mgcv convention: k=8 → 7 effective basis functions (identifiability constraint)
+        assert B.shape == (50, 7), f"Expected shape (50, 7), got {B.shape}"
         assert np.all(np.isfinite(B)), "Basis matrix contains NaN or Inf"
 
     def test_basis_matrix_shape_multivariate(self) -> None:
@@ -43,7 +44,7 @@ class TestTPRSBasicFunctionality:
         tprs = ThinPlateSpline(X, k=10)
         B = tprs.basis_matrix()
         
-        assert B.shape == (100, 10), f"Expected shape (100, 10), got {B.shape}"
+        assert B.shape == (100, 9), f"Expected shape (100, 9), got {B.shape}"
         assert np.all(np.isfinite(B)), "Basis matrix contains NaN or Inf"
 
     def test_knots_stored_correctly(self) -> None:
@@ -65,7 +66,7 @@ class TestTPRSBasicFunctionality:
         
         B = thin_plate_basis(X, k=8)
         
-        assert B.shape == (50, 8)
+        assert B.shape == (50, 7)
         assert np.all(np.isfinite(B))
 
 
@@ -141,7 +142,7 @@ class TestTPRSOutOfSamplePrediction:
         tprs = ThinPlateSpline(X_train, k=8)
         B_test = tprs.predict_basis(X_test)
         
-        assert B_test.shape == (3, 8), f"Expected shape (3, 8), got {B_test.shape}"
+        assert B_test.shape == (3, 7), f"Expected shape (3, 7), got {B_test.shape}"
 
     def test_prediction_numeric(self) -> None:
         """Test that predictions are numeric and finite."""
@@ -180,7 +181,7 @@ class TestTPRSOutOfSamplePrediction:
         tprs = ThinPlateSpline(X_train, k=8)
         B_test = tprs.predict_basis(X_test)
         
-        assert B_test.shape == (2, 8)
+        assert B_test.shape == (2, 7)
         assert np.all(np.isfinite(B_test))
 
     def test_prediction_dimension_mismatch(self) -> None:
@@ -191,7 +192,7 @@ class TestTPRSOutOfSamplePrediction:
         
         tprs = ThinPlateSpline(X_train, k=8)
         
-        with pytest.raises(ValueError, match="dimension"):
+        with pytest.raises(ValueError, match="dim"):
             tprs.predict_basis(X_test)
 
 
@@ -216,7 +217,7 @@ class TestTPRSEdgeCases:
         tprs = ThinPlateSpline(X, k=20)
         B = tprs.basis_matrix()
         
-        assert B.shape == (20, 20)
+        assert B.shape == (20, 19)
         assert np.all(np.isfinite(B))
 
     def test_k_greater_than_n_auto_reduced(self) -> None:
@@ -227,23 +228,24 @@ class TestTPRSEdgeCases:
         with pytest.warns(UserWarning):
             tprs = ThinPlateSpline(X, k=30)
         
-        # k should be reduced to n
-        assert tprs.k == 20
-        assert tprs.B.shape == (20, 20)
+        # k should be reduced to n, then -1 for identifiability
+        assert tprs.k == 19
+        assert tprs.B.shape == (20, 19)
 
     def test_default_k_selection(self) -> None:
-        """Test default k selection (min(n, 40))."""
+        """Test default k selection (min(n, 10), then -1 for identifiability)."""
         np.random.seed(42)
         
-        # Case 1: n < 40
+        # Case 1: n > default k (10)
         X_small = np.linspace(0, 1, 25).reshape(-1, 1)
         tprs_small = ThinPlateSpline(X_small)
-        assert tprs_small.k == 25
+        # default k=10, after identifiability constraint → 9
+        assert tprs_small.k == 9
         
-        # Case 2: n > 40
+        # Case 2: n > default k (10)
         X_large = np.linspace(0, 1, 100).reshape(-1, 1)
         tprs_large = ThinPlateSpline(X_large)
-        assert tprs_large.k == 40
+        assert tprs_large.k == 9
 
     def test_single_dimension_multivariate(self) -> None:
         """Test 2D data with tight clustering in one dimension."""
@@ -275,7 +277,7 @@ class TestTPRSNumericalEquivalence:
         
         # Check dimensions
         assert B.shape[0] == 50
-        assert B.shape[1] == 8
+        assert B.shape[1] == 7
         assert not np.any(np.isnan(B))
         assert not np.any(np.isinf(B))
 

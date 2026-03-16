@@ -76,66 +76,79 @@ class REMLObjective:
         self.n_smooth = len(S_list)
 
     def objective(self, beta: np.ndarray, log_lambda: np.ndarray) -> float:
-        r"""Compute REML score.
+        r"""Compute REML score (to be minimised).
 
-        REML = -1/2 [ log|X^T W X + Sλ| + y^T P y ]
+        For Gaussian family, uses the profiled REML (Wood 2011) where sigma^2
+        is profiled out analytically:
+
+            REML = (n - Mp) * log(RSS_p / (n - Mp))
+                   + log|X'X + S_lambda| - log|S_lambda^+|
+
+        For non-Gaussian families, uses the Laplace-approximate REML:
+
+            REML = deviance/phi + beta' S_lambda beta/phi
+                   + log|X'WX + S_lambda| - log|S_lambda^+|
 
         Args:
-            beta: Fitted coefficients at current λ.
-            log_lambda: Log of smoothing parameters (log λⱼ).
+            beta: Fitted coefficients at current lambda.
+            log_lambda: Log of smoothing parameters.
 
         Returns:
-            REML score (scalar).
+            REML score (scalar, lower is better).
         """
         lambda_vec = np.exp(log_lambda)
-
-        # Construct combined penalty
         S_combined = self._construct_combined_penalty(lambda_vec)
 
         # GLM weight matrix at current beta
         eta = self.X @ beta + self.offset
         mu = self.family.linkinv(eta)
         dmu_deta = self.family.dmu_deta(eta)
-        var_mu = self.family.variance(mu, self.dispersion)
-        
+        var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
         w = (dmu_deta**2) / var_mu
-        
-        # Construct X^T W X + S
+
         XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-        A = XtWX + S_combined
+        A = XtWX + S_combined + 1e-7 * np.eye(self.p)
 
-        # Log determinant of A
+        # Log determinant of A = X'WX + S_lambda
         try:
-            sign, logdet = linalg.slogdet(A)
-            logdet_A = logdet if sign > 0 else np.inf
-        except:
-            logdet_A = np.inf
+            sign, logdet = np.linalg.slogdet(A)
+            logdet_A = logdet if sign > 0 else 1e15
+        except Exception:
+            logdet_A = 1e15
 
-        # Precision (inverse of A)
-        try:
-            P = linalg.inv(A)
-        except linalg.LinAlgError:
-            return np.inf
+        # Log determinant of S_lambda^+ (positive eigenvalues only)
+        log_S_plus = self._penalty_log_determinant(lambda_vec)
 
-        # Quadratic form: y^T P y
-        roots = P @ self.y
-        quad_form = np.sum(self.y * roots)
+        # Deviance and penalty
+        deviance = -2.0 * self.family.loglik(self.y, mu, self.dispersion)
+        penalty = float(beta @ S_combined @ beta)
 
-        # REML
-        reml = -0.5 * (logdet_A + quad_form)
+        # Check if Gaussian (profiled REML)
+        from pymgcv.distributions.family_base import GaussianFamily
+        if isinstance(self.family, GaussianFamily):
+            # Null space dimension Mp = # unpenalized parameters
+            S_eigs = np.linalg.eigvalsh(S_combined)
+            Mp = int(np.sum(S_eigs < 1e-10))
+            n_eff = max(self.n - Mp, 1)
+            rss_p = deviance + penalty  # = ||y - Xb||^2 + b'Sb for Gaussian
+            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - log_S_plus
+        else:
+            reml = (deviance + penalty) / self.dispersion + logdet_A - log_S_plus
 
         return reml
 
     def gradient_wrt_log_lambda(
         self, beta: np.ndarray, log_lambda: np.ndarray
     ) -> np.ndarray:
-        r"""Compute gradient of REML w.r.t. log(λ).
+        r"""Compute gradient of REML w.r.t. log(lambda).
 
-        Uses chain rule:
-            ∂REML/∂(log λⱼ) = ∂REML/∂λⱼ * λⱼ
+        For Gaussian profiled REML:
+            dREML/d(rho_j) = lambda_j * (n-Mp) * beta'*S_j*beta / (dev+pen)
+                             + lambda_j * trace(A^{-1} S_j) - rank_j
 
-        where:
-            ∂REML/∂λⱼ = -1/2 [ trace(P Sⱼ) + (Xβ)^T P Sⱼ P (Xβ) ]
+        For general family:
+            dREML/d(rho_j) = lambda_j * [trace(A^{-1} S_j) - beta' S_j beta / phi]
+                             - rank_j
 
         Args:
             beta: Fitted coefficients.
@@ -146,44 +159,57 @@ class REMLObjective:
         """
         try:
             lambda_vec = np.exp(log_lambda)
-
             S_combined = self._construct_combined_penalty(lambda_vec)
 
             eta = self.X @ beta + self.offset
             mu = self.family.linkinv(eta)
             dmu_deta = self.family.dmu_deta(eta)
             var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
-
             w = np.clip((dmu_deta ** 2) / var_mu, 0, 1e10)
 
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-            A = XtWX + S_combined + 1e-6 * np.eye(self.p)  # Ridge for stability
+            A = XtWX + S_combined + 1e-8 * np.eye(self.p)
+            A_inv = linalg.pinv(A)
 
-            P = linalg.pinv(A)  # pseudo-inverse handles near-singular A
+            # Per-smooth penalty ranks
+            ranks = self._penalty_ranks()
 
-            # Use fitted linear predictor (p-dimensional) not y (n-dimensional)
-            Xbeta = self.X @ beta  # (n,) projected version via X^T
-            Px = P @ (self.X.T @ (w * Xbeta))  # (p,)
+            # Check if Gaussian (profiled REML gradient)
+            from pymgcv.distributions.family_base import GaussianFamily
+            is_gaussian = isinstance(self.family, GaussianFamily)
 
-            grad_log_lambda = np.zeros(self.n_smooth)
+            if is_gaussian:
+                deviance = -2.0 * self.family.loglik(self.y, mu, self.dispersion)
+                penalty = float(beta @ S_combined @ beta)
+                rss_p = deviance + penalty
+                S_eigs = np.linalg.eigvalsh(S_combined)
+                Mp = int(np.sum(S_eigs < 1e-10))
+                n_eff = max(self.n - Mp, 1)
 
+            grad = np.zeros(self.n_smooth)
             for j, S_j in enumerate(self.S_list):
-                PS_j = P @ S_j
-                trace_PSj = np.trace(PS_j)
-                quad_term = Xbeta @ (self.X @ (PS_j @ (self.X.T @ (w * Xbeta))))
-                grad_lambdaj = -0.5 * (trace_PSj + quad_term)
-                grad_log_lambda[j] = grad_lambdaj * lambda_vec[j]
+                trace_term = lambda_vec[j] * np.trace(A_inv @ S_j)
+                if is_gaussian:
+                    bSb = float(beta @ S_j @ beta)
+                    fit_term = lambda_vec[j] * n_eff * bSb / max(rss_p, 1e-300)
+                    grad[j] = fit_term + trace_term - ranks[j]
+                else:
+                    penalty_term = lambda_vec[j] * float(beta @ S_j @ beta) / self.dispersion
+                    grad[j] = penalty_term + trace_term - ranks[j]
 
-            return grad_log_lambda
+            return grad
         except Exception:
             return np.full(self.n_smooth, np.nan)
 
     def hessian_wrt_log_lambda(
         self, beta: np.ndarray, log_lambda: np.ndarray
     ) -> np.ndarray:
-        r"""Compute Hessian of REML w.r.t. log(λ).
+        r"""Compute Hessian of REML w.r.t. log(lambda).
 
-        Hessian[j,k] = ∂²REML / (∂(log λⱼ) ∂(log λₖ))
+        H[j,k] = d^2 REML / (d rho_j d rho_k)
+
+        Using the expected Hessian approximation (more stable):
+            H[j,k] = lambda_j * lambda_k * trace(A^{-1} S_j A^{-1} S_k)
 
         Args:
             beta: Fitted coefficients.
@@ -194,7 +220,6 @@ class REMLObjective:
         """
         try:
             lambda_vec = np.exp(log_lambda)
-
             S_combined = self._construct_combined_penalty(lambda_vec)
 
             eta = self.X @ beta + self.offset
@@ -205,62 +230,23 @@ class REMLObjective:
             w = np.clip((dmu_deta ** 2) / var_mu, 0, 1e10)
 
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-            A = XtWX + S_combined + 1e-6 * np.eye(self.p)  # Ridge for stability
+            A = XtWX + S_combined + 1e-8 * np.eye(self.p)
 
-            P = linalg.pinv(A)
-
-            # Use fitted values instead of raw y to avoid dimension mismatch
-            Xbeta = self.X @ beta  # (n,)
-            Py_proxy = P @ (self.X.T @ (w * Xbeta))  # (p,) coefficient-space proxy
+            A_inv = linalg.pinv(A)
 
             H = np.zeros((self.n_smooth, self.n_smooth))
+            # Pre-compute A_inv @ S_j for each j
+            AinvS = [A_inv @ S_j for S_j in self.S_list]
 
             for j in range(self.n_smooth):
                 for k in range(j, self.n_smooth):
-                    S_j = self.S_list[j]
-                    S_k = self.S_list[k]
-
-                    PS_j = P @ S_j
-                    PS_k = P @ S_k
-
-                    trace1 = np.trace(PS_j @ PS_k)
-
-                    PSk_Py = P @ (S_k @ Py_proxy)
-                    quad1 = Py_proxy @ (S_j @ PSk_Py)
-
-                    h_jk = 0.5 * (trace1 + quad1) * lambda_vec[j] * lambda_vec[k]
-
+                    h_jk = lambda_vec[j] * lambda_vec[k] * np.trace(AinvS[j] @ AinvS[k])
                     H[j, k] = h_jk
                     H[k, j] = h_jk
 
             return H
         except Exception:
             return np.full((self.n_smooth, self.n_smooth), np.nan)
-        for j in range(self.n_smooth):
-            for k in range(j, self.n_smooth):
-                S_j = self.S_list[j]
-                S_k = self.S_list[k]
-                
-                PS_j = P @ S_j
-                PS_k = P @ S_k
-                
-                # Trace terms
-                trace1 = np.trace(PS_j @ PS_k)
-                
-                # Quadratic terms
-                PSk_Py = P @ (S_k @ Py)
-                quad1 = self.y @ (P @ (S_j @ PSk_Py))
-                
-                # Hessian element w.r.t. λⱼ, λₖ
-                h_jk = 0.5 * (trace1 + quad1)
-                
-                # Chain rule
-                h_jk *= lambda_vec[j] * lambda_vec[k]
-                
-                H[j, k] = h_jk
-                H[k, j] = h_jk
-
-        return H
 
     def objective_gradient_hessian(
         self, beta: np.ndarray, log_lambda: np.ndarray
@@ -281,6 +267,29 @@ class REMLObjective:
         for S_j, lambda_j in zip(self.S_list, lambda_vec):
             S += lambda_j * S_j
         return S
+
+    def _penalty_log_determinant(self, lambda_vec: np.ndarray) -> float:
+        r"""Compute log|S_lambda^+| = sum_j (rank_j * log(lambda_j) + log|S_j^+|).
+
+        The generalized determinant is the product of positive eigenvalues
+        of the combined weighted penalty.
+        """
+        log_det = 0.0
+        for j, S_j in enumerate(self.S_list):
+            eigs = np.linalg.eigvalsh(S_j)
+            pos_eigs = eigs[eigs > 1e-10]
+            if len(pos_eigs) > 0:
+                log_det += len(pos_eigs) * np.log(max(lambda_vec[j], 1e-300))
+                log_det += np.sum(np.log(pos_eigs))
+        return log_det
+
+    def _penalty_ranks(self) -> list[int]:
+        """Compute rank (number of positive eigenvalues) for each penalty."""
+        ranks = []
+        for S_j in self.S_list:
+            eigs = np.linalg.eigvalsh(S_j)
+            ranks.append(int(np.sum(eigs > 1e-10)))
+        return ranks
 
 
 def compute_reml(

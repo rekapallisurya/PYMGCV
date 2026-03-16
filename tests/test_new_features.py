@@ -164,15 +164,17 @@ class TestByVariableParser:
 
 class TestByVariableModelMatrix:
     def test_factor_by_expands_columns(self):
-        """s(x, by=group) with 3 levels should give 3×k columns."""
+        """s(x, by=group) with 3 levels should give 3×(k-1) columns (sum-to-zero constraint)."""
         from pymgcv.utils.model_matrix import ModelMatrix
         df = make_factor_data(90)
         k = 8
         mm = ModelMatrix(df, f'y ~ s(x, by=group, k={k})', center=False)
-        # 3 levels × 8 basis cols = 24 smooth cols + 1 intercept
+        # 3 levels × (k-1) basis cols (identifiability constraint drops 1)
         smooth_slice = mm.smooth_indices[0]
         smooth_dim = smooth_slice.stop - smooth_slice.start
-        assert smooth_dim == 3 * k, f"Expected {3*k} smooth cols, got {smooth_dim}"
+        # TPRS applies sum-to-zero constraint → k-1 basis functions per smooth
+        expected = 3 * (k - 1)
+        assert smooth_dim == expected, f"Expected {expected} smooth cols, got {smooth_dim}"
 
     def test_factor_by_levels_stored(self):
         """by-levels should be stored in smooth_by_levels."""
@@ -194,8 +196,8 @@ class TestByVariableModelMatrix:
         mm = ModelMatrix(df, f'y ~ s(x, by=w, k={k})', center=False)
         smooth_slice = mm.smooth_indices[0]
         smooth_dim = smooth_slice.stop - smooth_slice.start
-        # Continuous by: same k columns (scaled)
-        assert smooth_dim == k, f"Expected {k} smooth cols, got {smooth_dim}"
+        # Continuous by: k-1 columns (identifiability constraint on TPRS)
+        assert smooth_dim == k - 1, f"Expected {k-1} smooth cols, got {smooth_dim}"
 
     def test_basis_zeros_padding(self):
         """Observations in one level should have zero contribution to other-level cols."""
@@ -208,16 +210,17 @@ class TestByVariableModelMatrix:
         levels = mm.smooth_by_levels[0]
         groups = df['group'].values
         k = 5
+        k_eff = k - 1  # TPRS identifiability constraint
         # Check that rows for group 'A' (index 0) are 0 in columns for group 'B' and 'C'
         for level_idx, level in enumerate(levels):
             mask = (groups == level)
-            other_start = 0 if level_idx > 0 else k
-            other_end = other_start + k
+            other_start = 0 if level_idx > 0 else k_eff
+            other_end = other_start + k_eff
             # Rows for this level should be zero in the other-level columns
             for other_idx in range(len(levels)):
                 if other_idx == level_idx:
                     continue
-                other_cols = slice(other_idx * k, (other_idx + 1) * k)
+                other_cols = slice(other_idx * k_eff, (other_idx + 1) * k_eff)
                 zero_block = X_smooth[mask, other_cols]
                 np.testing.assert_allclose(zero_block, 0.0)
 

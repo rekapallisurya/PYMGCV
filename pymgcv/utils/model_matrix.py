@@ -415,19 +415,27 @@ class ModelMatrix:
             return X_expanded, None
 
     def _center_scale_parametric(self) -> None:
-        """Center and/or scale parametric terms."""
+        """Center and/or scale parametric terms (skip the intercept column)."""
         if self.param_indices is None:
             return
 
         X_param = self.X[:, self.param_indices]
+        n_param = X_param.shape[1]
+
+        # Identify intercept column (all ones) — do not center or scale it
+        is_intercept = np.array([
+            np.allclose(X_param[:, j], 1.0) for j in range(n_param)
+        ])
 
         if self.center:
             self.center_mean = np.nanmean(X_param, axis=0)
+            self.center_mean[is_intercept] = 0.0  # don't shift intercept
             X_param = X_param - self.center_mean
 
         if self.scale:
             self.scale_std = np.nanstd(X_param, axis=0)
-            self.scale_std[self.scale_std == 0] = 1  # avoid division by zero
+            self.scale_std[self.scale_std == 0] = 1
+            self.scale_std[is_intercept] = 1.0  # don't scale intercept
             X_param = X_param / self.scale_std
 
         self.X[:, self.param_indices] = X_param
