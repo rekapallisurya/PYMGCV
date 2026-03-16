@@ -314,7 +314,7 @@ class GAM:
 
         eta = X @ beta + offset
         mu = family.linkinv(eta)
-        var_mu = family.variance(mu)
+        var_mu = family.variance(mu, self.dispersion_)
         var_mu = np.where(var_mu < 1e-10, 1e-10, var_mu)
 
         pearson_resid_sq = (y - mu) ** 2 / var_mu
@@ -328,16 +328,19 @@ class GAM:
     def standard_errors(self) -> Optional[np.ndarray]:
         """Compute Bayesian posterior standard errors for coefficients.
 
-        Uses the frequentist Bayesian sandwich estimator (Wood 2006):
-            Cov(β) = (X'WX + S_λ)^{-1} X'WX (X'WX + S_λ)^{-1} φ
+        Uses the Bayesian posterior covariance (Wood 2006, mgcv default):
+            V_b = (X'WX + S_lambda)^{-1} * phi
 
-        For Gaussian, a simpler form is used.
+        The square root of the diagonal gives the standard errors that mgcv
+        reports in summary.gam().
 
         Returns:
             Standard errors array of shape (p,), or None if not fitted.
         """
         if not self.fitted or self._S_combined is None:
             return None
+
+        from pymgcv.linalg.penalized_solver import PenalizedSolver
 
         X = self._X_fit
         beta = self.beta
@@ -349,22 +352,15 @@ class GAM:
         eta = X @ beta + offset
         mu = family.linkinv(eta)
         dmu_deta = family.dmu_deta(eta)
-        var_mu = family.variance(mu)
-        var_mu = np.where(var_mu < 1e-10, 1e-10, var_mu)
-        w = dmu_deta**2 / var_mu
+        var_mu = np.maximum(family.variance(mu, self.dispersion_), 1e-10)
+        w = np.clip(dmu_deta ** 2 / var_mu, 1e-12, 1e8)
 
-        # Compute efficiently: X'WX = X' * (w[:, None] * X) = (X * sqrt_w).T @ (X * sqrt_w)
-        sqrt_w = np.sqrt(w)
-        Xw = X * sqrt_w[:, np.newaxis]
-        XtWX = Xw.T @ Xw
+        XtWX = X.T @ (X * w[:, np.newaxis])
 
-        A = XtWX + self._S_combined
         try:
-            # Use Cholesky or pseudoinverse for numerical stability
-            A_inv = np.linalg.pinv(A)
-            Cov = A_inv @ XtWX @ A_inv * self.dispersion_
-            diag_cov = np.diag(Cov)
-            se = np.sqrt(np.maximum(diag_cov, 0.0))
+            solver = PenalizedSolver(XtWX, self._S_combined)
+            diag_Ainv = solver.inv_diagonal()
+            se = np.sqrt(np.maximum(diag_Ainv * self.dispersion_, 0.0))
         except Exception:
             se = np.full(len(beta), np.nan)
 

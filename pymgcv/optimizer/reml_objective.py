@@ -251,15 +251,79 @@ class REMLObjective:
     def objective_gradient_hessian(
         self, beta: np.ndarray, log_lambda: np.ndarray
     ) -> tuple[float, np.ndarray, np.ndarray]:
-        """Compute REML, gradient, and Hessian together (efficient).
+        """Compute REML, gradient, and Hessian in one pass (single A factorisation).
+
+        Factorises A = X'WX + S_lambda exactly once via PenalizedSolver and
+        reuses it for the objective, gradient, and Hessian — avoiding the
+        inconsistent ridge/ridge mismatch in the separate methods.
 
         Returns:
             (reml_score, gradient, hessian)
         """
-        reml = self.objective(beta, log_lambda)
-        grad = self.gradient_wrt_log_lambda(beta, log_lambda)
-        hess = self.hessian_wrt_log_lambda(beta, log_lambda)
-        return reml, grad, hess
+        from pymgcv.linalg.penalized_solver import PenalizedSolver
+        from pymgcv.distributions.family_base import GaussianFamily
+
+        lambda_vec = np.exp(log_lambda)
+        S_combined = self._construct_combined_penalty(lambda_vec)
+
+        # ---- GLM weights at current beta ----
+        eta = self.X @ beta + self.offset
+        mu = self.family.linkinv(eta)
+        dmu_deta = self.family.dmu_deta(eta)
+        var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
+        w = np.clip((dmu_deta ** 2) / var_mu, 1e-12, 1e8)
+
+        XtWX = self.X.T @ (self.X * w[:, np.newaxis])
+
+        # ---- Single factorisation ----
+        solver = PenalizedSolver(XtWX, S_combined)
+        logdet_A = solver.log_determinant()
+        log_S_plus = self._penalty_log_determinant(lambda_vec)
+
+        deviance = -2.0 * self.family.loglik(self.y, mu, self.dispersion)
+        penalty = float(beta @ S_combined @ beta)
+        ranks = self._penalty_ranks()
+
+        # ---- Objective ----
+        is_gaussian = isinstance(self.family, GaussianFamily)
+        if is_gaussian:
+            S_eigs = np.linalg.eigvalsh(S_combined)
+            Mp = int(np.sum(S_eigs < 1e-10))
+            n_eff = max(self.n - Mp, 1)
+            rss_p = deviance + penalty
+            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - log_S_plus
+        else:
+            reml = (deviance + penalty) / self.dispersion + logdet_A - log_S_plus
+
+        if not np.isfinite(reml):
+            return float('nan'), np.full(self.n_smooth, np.nan), np.full((self.n_smooth, self.n_smooth), np.nan)
+
+        # ---- Gradient and Hessian via A^{-1} S_j ----
+        # Pre-compute A^{-1} S_j for each j (reuse solver)
+        AinvS = []
+        for j, S_j in enumerate(self.S_list):
+            AinvSj = solver.solve(S_j)  # shape (p, p) — columns of A^{-1} S_j
+            AinvS.append(AinvSj)
+
+        grad = np.zeros(self.n_smooth)
+        H = np.zeros((self.n_smooth, self.n_smooth))
+
+        for j in range(self.n_smooth):
+            trace_term = lambda_vec[j] * float(np.trace(AinvS[j]))
+            if is_gaussian:
+                bSb = float(beta @ self.S_list[j] @ beta)
+                fit_term = lambda_vec[j] * n_eff * bSb / max(rss_p, 1e-300)
+                grad[j] = fit_term + trace_term - ranks[j]
+            else:
+                penalty_term = lambda_vec[j] * float(beta @ self.S_list[j] @ beta) / self.dispersion
+                grad[j] = penalty_term + trace_term - ranks[j]
+
+            for k in range(j, self.n_smooth):
+                h_jk = lambda_vec[j] * lambda_vec[k] * float(np.trace(AinvS[j] @ AinvS[k]))
+                H[j, k] = h_jk
+                H[k, j] = h_jk
+
+        return reml, grad, H
 
     def _construct_combined_penalty(self, lambda_vec: np.ndarray) -> np.ndarray:
         """Construct combined penalty Sλ = Σⱼ λⱼ Sⱼ."""

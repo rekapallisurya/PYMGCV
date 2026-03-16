@@ -161,11 +161,13 @@ class MAGICOptimizer:
         from pymgcv.optimizer.pirls import PIRLSSolver
         from pymgcv.optimizer.reml_objective import REMLObjective
 
+        prev_beta: np.ndarray | None = None  # warm-start state across outer iterations
+
         for outer_it in range(max_outer_iter):
             # Update lambda from log scale
             self.lambda_vec = np.exp(self.lambda_log)
 
-            # Inner loop: PIRLS at current lambda
+            # Inner loop: PIRLS at current lambda — warm-start from previous outer iteration
             solver = PIRLSSolver(
                 self.X, self.y, self.family, self.S_list,
                 lambda_vec=self.lambda_vec,
@@ -173,7 +175,11 @@ class MAGICOptimizer:
                 dispersion=self.dispersion,
                 weights=self.weights,
             )
-            beta = solver.solve(max_iter=max_inner_iter, tol=inner_tol, verbose=False)
+            beta = solver.solve(
+                max_iter=max_inner_iter, tol=inner_tol, verbose=False,
+                beta_init=prev_beta,
+            )
+            prev_beta = beta.copy()
 
             # Compute REML objective and derivatives
             reml_obj = REMLObjective(
@@ -224,7 +230,10 @@ class MAGICOptimizer:
                     offset=self.offset,
                     dispersion=self.dispersion,
                 )
-                beta_new = solver_new.solve(max_iter=max_inner_iter, tol=inner_tol, verbose=False)
+                beta_new = solver_new.solve(
+                    max_iter=max_inner_iter, tol=inner_tol, verbose=False,
+                    beta_init=prev_beta,
+                )
                 reml_score_new = reml_obj.objective(beta_new, np.log(lambda_new))
                 if reml_score_new < reml_score:
                     self.lambda_log = lambda_log_new

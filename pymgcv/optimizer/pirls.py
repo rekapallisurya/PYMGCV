@@ -185,202 +185,196 @@ class PIRLSSolver:
         max_iter: int = 25,
         tol: float = 1e-7,
         verbose: bool = False,
+        beta_init: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Solve GAM via PIRLS with line search stabilization.
+        """Solve GAM via PIRLS.
+
+        Uses the PenalizedSolver (Cholesky → ridge → SVD) for the inner
+        linear system.  Convergence criterion matches mgcv exactly:
+
+            |dev_old - dev_new| / (0.1 + |dev_new|) < tol
+
+        Step-halving prevents deviance from increasing.
 
         Args:
-            max_iter: Maximum iterations.
-            tol: Convergence tolerance on coefficient change.
-            verbose: Print iteration progress.
+            max_iter: Maximum PIRLS iterations.
+            tol: Convergence tolerance (deviance change, relative).
+            verbose: Print per-iteration progress.
+            beta_init: Warm-start coefficients (optional); if None, uses the
+                       family-initialised beta from __init__.
 
         Returns:
             Fitted coefficient vector β.
         """
-        for it in range(max_iter):
-            # Compute predictions (use initialized mu on first pass if already set)
-            if it > 0 or np.any(self.beta != 0.0):
-                self.eta = self.X @ self.beta + self.offset
-                self.mu = self.family.linkinv(self.eta)
-                self._clip_mu()
+        from pymgcv.linalg.penalized_solver import PenalizedSolver
 
-            # Compute weights and working vector
+        if beta_init is not None:
+            self.beta = np.asarray(beta_init, dtype=np.float64).copy()
+            # Recompute eta/mu from warm-start beta
+            self.eta = self.X @ self.beta + self.offset
+            self.mu = self.family.linkinv(self.eta)
+            self._clip_mu()
+
+        dev_old = np.inf
+        last_solver: Optional[PenalizedSolver] = None
+        last_XtWX: Optional[np.ndarray] = None
+
+        for it in range(max_iter):
+            # ----------------------------------------------------------
+            # 1. Linear predictor and mean at current beta
+            # ----------------------------------------------------------
+            self.eta = self.X @ self.beta + self.offset
+            self.mu = self.family.linkinv(self.eta)
+            self._clip_mu()
+
+            # ----------------------------------------------------------
+            # 2. IRLS weights and working response
+            # ----------------------------------------------------------
             dmu_deta = self.family.dmu_deta(self.eta)
             var_mu = self.family.variance(self.mu, self.dispersion)
-            
-            # Handle zero/very small variances
+
             var_mu = np.maximum(var_mu, 1e-10)
-            dmu_deta = np.where(np.abs(dmu_deta) < 1e-10, 1e-10, dmu_deta)
-            
-            # Weighted least squares: include observation weights
-            # w_i = weights_i * (dμ/dη)² / Var(Y)
-            w = self.weights * (dmu_deta**2) / var_mu
-            
-            # Working vector: z = eta + (y - mu) / (dmu/deta)
-            # Note: observation weights enter only via w, not via z
-            z = self.eta + (self.y - self.mu) / dmu_deta
-            
-            # 🔴 CRITICAL: Adjust z to remove offset contribution
-            # Since eta includes offset, z includes it too. For correct coefficient recovery,
-            # we need to solve X^T W X @ beta = X^T W (z - offset), not X^T W z
-            z_adjusted = z - self.offset
+            # Safe dmu/deta: avoid division by zero in working response
+            dmu_safe = np.where(np.abs(dmu_deta) < 1e-10,
+                                np.sign(dmu_deta + 1e-30) * 1e-10,
+                                dmu_deta)
 
-            # Solve weighted least squares: (X^T W X + Sλ) β = X^T W z_adjusted
+            # IRLS weights (include observation weights)
+            w = self.weights * np.clip((dmu_safe ** 2) / var_mu, 1e-12, 1e8)
+
+            # Working response z = eta + (y - mu) / dmu_deta
+            # Remove offset so the system solves for β only
+            z_adj = self.eta + (self.y - self.mu) / dmu_safe - self.offset
+
+            # ----------------------------------------------------------
+            # 3. Penalized WLS system: (X'WX + S) beta_new = X'W z_adj
+            # ----------------------------------------------------------
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-            Xtwz = self.X.T @ (w * z_adjusted)
+            Xtwz = self.X.T @ (w * z_adj)
 
-            A = XtWX + self.S
-            
-            try:
-                beta_new = linalg.solve(A, Xtwz)
-            except linalg.LinAlgError:
-                # Singular system: use least-squares solver
-                beta_new = linalg.lstsq(A, Xtwz)[0]
+            last_XtWX = XtWX
+            last_solver = PenalizedSolver(XtWX, self.S)
+            beta_cand = last_solver.solve(Xtwz)
 
-            # 🔴 NEW: Line search for stability
-            beta_old = self.beta.copy()
-            beta_new, step_size = self._line_search(
-                self.beta, beta_new, self.eta
-            )
-            
-            # Check for NaN/Inf
-            if not np.all(np.isfinite(beta_new)):
+            if not np.all(np.isfinite(beta_cand)):
+                # Solver failed: stay at current beta and exit
                 if verbose:
-                    print(f"⚠️  Iteration {it}: Non-finite beta detected, reverting")
-                beta_new = beta_old  # Use previous beta
-                step_size = 0
-
-            # 🔴 NEW: Improved convergence check (multiple criteria)
-            dev = self._compute_deviance()
-            delta_beta = np.max(np.abs(beta_new - beta_old))
-            
-            if len(self.dev_history) > 0:
-                delta_dev = abs(dev - self.dev_history[-1])
-            else:
-                delta_dev = float('inf')
-            
-            # Track history
-            obj = self._compute_objective()
-            self.history.append({
-                'iteration': it,
-                'delta_beta': delta_beta,
-                'objective': obj,
-                'beta_norm': np.linalg.norm(beta_new),
-                'step_size': step_size,
-                'deviance': dev,
-            })
-            self.dev_history.append(dev)
-            
-            if verbose:
-                print(
-                    f'Iter {it:2d}: Δβ = {delta_beta:.6e}, '
-                    f'ΔDev = {delta_dev:.6e}, step_size = {step_size:.2f}'
-                )
-
-            self.beta = beta_new
-
-            # 🔴 NEW: Convergence check (all criteria must pass)
-            if self._has_converged(delta_beta, delta_dev, tol):
-                self.converged = True
-                self.iterations = it + 1
-                if verbose:
-                    print(f'✓ Converged after {self.iterations} iterations')
+                    print(f'  PIRLS iter {it}: solver returned non-finite beta')
                 break
 
-        if not self.converged and verbose:
-            print(f'⚠️  Warning: Did not converge after {max_iter} iterations')
+            # ----------------------------------------------------------
+            # 4. Step-halving: ensure deviance does not increase
+            # ----------------------------------------------------------
+            beta_cand = self._step_halve(self.beta, beta_cand)
+            self.beta = beta_cand
 
-        self.iterations = it + 1
+            # ----------------------------------------------------------
+            # 5. Deviance at updated beta
+            # ----------------------------------------------------------
+            self.eta = self.X @ self.beta + self.offset
+            self.mu = self.family.linkinv(self.eta)
+            self._clip_mu()
+            dev_new = self._compute_deviance()
+
+            # Track per-iteration history (step_size=1 when no halving happened)
+            self.dev_history.append(dev_new)
+            self.history.append({'step_size': 1.0, 'deviance': dev_new,
+                                  'iteration': it})
+
+            if verbose:
+                rel = abs(dev_old - dev_new) / (0.1 + abs(dev_new))
+                print(f'  PIRLS iter {it:2d}: dev={dev_new:.6f}  '
+                      f'Δdev/dev={rel:.2e}')
+
+            # ----------------------------------------------------------
+            # 6. mgcv-style convergence check
+            # ----------------------------------------------------------
+            if abs(dev_old - dev_new) / (0.1 + abs(dev_new)) < tol:
+                self.converged = True
+                self.iterations = it + 1
+                break
+
+            dev_old = dev_new
+
+        else:
+            self.iterations = max_iter
+
+        # ----------------------------------------------------------
+        # 7. Rebuild solver at final beta for covariance / EDF reuse
+        # ----------------------------------------------------------
+        self.eta = self.X @ self.beta + self.offset
+        self.mu = self.family.linkinv(self.eta)
+        self._clip_mu()
+
+        dmu = self.family.dmu_deta(self.eta)
+        vm = np.maximum(self.family.variance(self.mu, self.dispersion), 1e-10)
+        dmu_s = np.where(np.abs(dmu) < 1e-10, 1e-10, dmu)
+        w_final = self.weights * np.clip((dmu_s ** 2) / vm, 1e-12, 1e8)
+
+        self.last_XtWX_ = self.X.T @ (self.X * w_final[:, np.newaxis])
+        self.last_solver_ = PenalizedSolver(self.last_XtWX_, self.S)
+
         return self.beta
 
-    def _compute_objective(self) -> float:
-        """Compute penalized deviance objective.
+    def _step_halve(
+        self,
+        beta_old: np.ndarray,
+        beta_cand: np.ndarray,
+        max_halvings: int = 25,
+    ) -> np.ndarray:
+        """Halve the step if deviance increases (mgcv-style safeguard).
 
-        L(β) = deviance + βᵀ Sλ β
+        Accepts the candidate if deviance does not increase by more than
+        a tiny tolerance (0.0001 %), matching mgcv's step.failed criterion.
         """
-        deviance = self._compute_deviance()
-        penalty = self.beta @ self.S @ self.beta
-        return deviance + penalty
+        direction = beta_cand - beta_old
+
+        # Baseline deviance at the current (old) beta
+        # Note: self.mu was already updated to reflect self.beta = beta_old
+        dev_curr = self._compute_deviance()
+
+        step = 1.0
+        for _ in range(max_halvings):
+            beta_try = beta_old + step * direction
+            eta_try = self.X @ beta_try + self.offset
+
+            # Prevent exp-overflow in exponential families
+            if np.max(np.abs(eta_try)) > 100:
+                step *= 0.5
+                continue
+
+            try:
+                mu_try = self.family.linkinv(eta_try)
+            except Exception:
+                step *= 0.5
+                continue
+
+            if not np.all(np.isfinite(mu_try)):
+                step *= 0.5
+                continue
+
+            # Temporarily update state to evaluate deviance
+            mu_save, beta_save = self.mu.copy(), self.beta.copy()
+            self.mu = mu_try
+            self._clip_mu()
+            self.beta = beta_try
+            dev_try = self._compute_deviance()
+            self.mu = mu_save
+            self.beta = beta_save
+
+            # Accept if deviance did not increase by more than 0.0001 %
+            # (matches mgcv: dev > devold * 1.0000001  => step.failed)
+            if dev_try <= dev_curr * 1.0000001 + 1e-10:
+                return beta_try
+
+            step *= 0.5
+
+        # No improvement found: return old beta (do not move)
+        return beta_old
 
     def _compute_deviance(self) -> float:
-        """Compute deviance (unpenalized)."""
-        return -2 * self.family.loglik(self.y, self.mu, self.dispersion)
-
-    def _line_search(self, beta_old: np.ndarray, beta_new: np.ndarray,
-                     eta_old: np.ndarray, max_trials: int = 10) -> tuple:
-        """Perform backtracking line search for step size.
-        
-        Returns:
-            (beta_final, step_size) tuple
-        """
-        step_size = 1.0
-        beta_direction = beta_new - beta_old
-        
-        # Store current state
-        mu_old = self.mu.copy()
-        beta_backup = self.beta.copy()
-        dev_old = self._compute_deviance()
-        
-        for trial in range(max_trials):
-            # Trial step
-            beta_trial = beta_old + step_size * beta_direction
-            eta_trial = self.X @ beta_trial + self.offset
-            
-            # Check if eta is in valid range
-            eta_max = 100  # Prevent overflow in link functions
-            if np.any(np.abs(eta_trial) > eta_max):
-                step_size *= 0.5
-                continue
-            
-            # Evaluate deviance
-            try:
-                mu_trial = self.family.linkinv(eta_trial)
-                if not np.all(np.isfinite(mu_trial)):
-                    step_size *= 0.5
-                    continue
-                
-                self.mu = mu_trial
-                self.beta = beta_trial
-                dev_trial = self._compute_deviance()
-                
-                # Accept only if there is improvement (monotonic decrease)
-                # Use very small improvement threshold to avoid oscillations
-                if dev_trial < dev_old:
-                    return beta_trial, step_size
-                
-                step_size *= 0.5
-            except (ValueError, FloatingPointError):
-                # Evaluation error, try smaller step
-                step_size *= 0.5
-                continue
-        
-        # Fallback: use best step found (at least step_size would have been reduced)
-        # Return the last valid step even if small
-        self.mu = self.family.linkinv(self.X @ beta_backup + self.offset)
-        self.beta = beta_backup
-        return beta_backup, 0.0
-
-    def _has_converged(self, delta_beta: float, delta_dev: float,
-                      tol: float) -> bool:
-        """Check convergence via multiple criteria.
-        
-        For standard GLM: beta change small
-        For stability: relative deviance change small
-        Either one passing indicates good convergence.
-        """
-        # Criterion 1: coefficients have changed very little
-        beta_converged = delta_beta < tol
-        
-        # Criterion 2: deviance has changed very little (relative)
-        # Use the average deviance to normalize (more robust for different scales)
-        avg_dev = np.mean(self.dev_history[-min(5, len(self.dev_history)):])
-        deviance_converged = delta_dev < (tol * 100) and (delta_dev / (abs(avg_dev) + 1e-10) < 1e-5)
-        
-        # Converged if beta change is small AND relative deviance change is very small
-        # OR if both are small on absolute scale
-        all_small = (delta_beta < 1e-6) and (delta_dev < 1e-6)
-        either_converged = beta_converged or deviance_converged
-        
-        return all_small or either_converged
+        """Compute deviance -2 * loglik(y, mu, phi) at current mu."""
+        return -2.0 * self.family.loglik(self.y, self.mu, self.dispersion)
 
     def coefficients(self) -> np.ndarray:
         """Return fitted coefficients."""
@@ -395,43 +389,24 @@ class PIRLSSolver:
         return self.X @ self.beta + self.offset
 
     def residuals(self, type: str = 'deviance') -> np.ndarray:
-        """Compute residuals.
-
-        Args:
-            type: One of 'deviance', 'pearson', 'response'.
-
-        Returns:
-            Residuals vector, shape (n,).
-        """
+        """Compute residuals of type 'deviance', 'pearson', or 'response'."""
         mu = self.fitted_values()
-        
         if type == 'response':
             return self.y - mu
         elif type == 'pearson':
             var_mu = self.family.variance(mu, self.dispersion)
-            return (self.y - mu) / np.sqrt(var_mu)
+            return (self.y - mu) / np.sqrt(np.maximum(var_mu, 1e-10))
         elif type == 'deviance':
-            # Deviance residuals (more complex, family-dependent)
-            # For Gaussian: sqrt((y - mu)^2)
-            # For Poisson/Gamma: sign(y - mu) * sqrt(...) based on loglik
-            return np.sqrt(2 * (
-                self.family.loglik(self.y, self.y, self.dispersion)
-                - self.family.loglik(self.y, mu, self.dispersion)
-            ))
+            ll_sat = self.family.loglik(self.y, self.y, self.dispersion)
+            ll_fit = self.family.loglik(self.y, mu, self.dispersion)
+            return np.sign(self.y - mu) * np.sqrt(np.maximum(2.0 * (ll_sat - ll_fit), 0.0))
         else:
             raise ValueError(f'Unknown residual type: {type}')
 
     def summary(self) -> str:
-        """Return summary of fitting."""
-        lines = [
-            'PIRLS Solver',
-            '============',
-            f'Convergence: {self.converged}',
-            f'Iterations: {self.iterations}',
-            f'Final objective: {self.history[-1]["objective"]:.6e}',
-            f'Final coefficient norm: {self.history[-1]["beta_norm"]:.6e}',
-        ]
-        return '\n'.join(lines)
+        """Brief summary string."""
+        return (f'PIRLSSolver: converged={self.converged}, '
+                f'iterations={self.iterations}')
 
 
 def solve_pirls(
@@ -446,23 +421,7 @@ def solve_pirls(
     max_iter: int = 25,
     tol: float = 1e-7,
 ) -> tuple[np.ndarray, bool]:
-    """Functional API for PIRLS solver.
-
-    Args:
-        X: Design matrix.
-        y: Response.
-        family: Distribution family.
-        S_list: Penalty matrices.
-        lambda_vec: Smoothing parameters.
-        offset: Offset.
-        dispersion: Dispersion parameter.
-        weights: Observation weights.
-        max_iter: Max iterations.
-        tol: Convergence tolerance.
-
-    Returns:
-        (beta, converged)
-    """
+    """Functional API for PIRLS solver."""
     solver = PIRLSSolver(
         X, y, family, S_list,
         lambda_vec=lambda_vec,
