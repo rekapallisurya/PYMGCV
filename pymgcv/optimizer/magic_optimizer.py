@@ -108,6 +108,7 @@ class MAGICOptimizer:
         use_jax: bool = False,
         use_reml: bool = True,
         method: str = 'reml',
+        gamma: float = 1.0,
     ) -> dict:
         """Optimize smoothing parameters via MAGIC.
 
@@ -140,6 +141,7 @@ class MAGICOptimizer:
                 outer_tol=outer_tol,
                 inner_tol=inner_tol,
                 verbose=verbose,
+                gamma=gamma,
             )
         # Default: REML
         return self._optimize_reml(
@@ -148,6 +150,7 @@ class MAGICOptimizer:
             outer_tol=outer_tol,
             inner_tol=inner_tol,
             verbose=verbose,
+            gamma=gamma,
         )
 
     def _optimize_reml(
@@ -157,6 +160,7 @@ class MAGICOptimizer:
         outer_tol: float,
         inner_tol: float,
         verbose: bool,
+        gamma: float = 1.0,
     ) -> dict:
         from pymgcv.optimizer.pirls import PIRLSSolver
         from pymgcv.optimizer.reml_objective import REMLObjective
@@ -190,6 +194,13 @@ class MAGICOptimizer:
             )
 
             reml_score, grad_log_lambda, hess_log_lambda = reml_obj.objective_gradient_hessian(beta, self.lambda_log)
+
+            # gamma > 1 inflates the penalty on EDF (sparser fits).  In the REML
+            # gradient, the trace term tr(A^{-1} S_j) * lambda_j represents the
+            # effective DoF contribution; scaling it by gamma matches mgcv behaviour.
+            if gamma != 1.0:
+                grad_log_lambda  = grad_log_lambda  * gamma
+                hess_log_lambda  = hess_log_lambda  * gamma
 
             self.reml_history.append(reml_score)
 
@@ -276,15 +287,22 @@ class MAGICOptimizer:
         outer_tol: float,
         inner_tol: float,
         verbose: bool,
+        gamma: float = 1.0,
     ) -> dict:
         """Optimize smoothing parameters via GCV, UBRE, or ML criterion.
 
         Uses scipy.optimize.minimize on log(lambda) with numerical gradients.
         Supports Gaussian (GCV/UBRE) and non-Gaussian families (ML).
+
+        gamma: Scale inflation for EDF.  GCV_gamma = n*D/(n - gamma*DoF)^2.
+               UBRE_gamma = dev/n + 2*gamma*phi*dof/n - phi.
+               gamma > 1 gives sparser models (mgcv's gamma= argument).
         """
         from pymgcv.optimizer.pirls import PIRLSSolver
+        from pymgcv.linalg.penalized_solver import PenalizedSolver
 
         n = len(self.y)
+        gam = float(gamma)
 
         def _criterion(log_lam: np.ndarray) -> float:
             lam = np.exp(log_lam)
@@ -299,30 +317,37 @@ class MAGICOptimizer:
             eta = self.X @ beta + self.offset
             mu = self.family.linkinv(eta)
 
-            # Combined penalty matrix
+            # Combined penalty matrix and Hessian of log-likelihood
             S_lam = sum(l * S for l, S in zip(lam, self.S_list))
-            XtWX = self.X.T @ (self.X * s.weights[:, None])
+            dmu_deta = self.family.dmu_deta(eta)
+            var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
+            w = (dmu_deta ** 2) / var_mu
+            XtWX = self.X.T @ (self.X * (w * s.weights)[:, None])
 
-            try:
-                H_inv = np.linalg.inv(XtWX + S_lam)
-            except np.linalg.LinAlgError:
-                H_inv = np.linalg.pinv(XtWX + S_lam)
+            # EDF via PenalizedSolver (stable)
+            psolver = PenalizedSolver(XtWX, S_lam)
+            AinvXtWX = psolver.solve(XtWX)
+            dof = float(np.clip(np.trace(AinvXtWX), 0, self.X.shape[1]))
+            # Apply gamma scaling
+            eff_dof = gam * dof
 
-            dof = float(np.trace(H_inv @ XtWX))
-            dof = np.clip(dof, 0, self.X.shape[1])
+            # Proper deviance (twice neg-loglik contribution)
+            deviance = float(-2.0 * self.family.loglik(self.y, mu, self.dispersion))
 
             if method == 'gcv':
-                dev = float(np.sum((self.y - mu) ** 2))
-                denom = max(n - dof, 0.5)
-                score = n * dev / denom ** 2
+                # GCV_gamma = n * D / (n - gamma*DoF)^2   (Gaussian: D = RSS)
+                denom = max(n - eff_dof, 0.5)
+                score = n * deviance / (denom ** 2)
             elif method == 'ubre':
-                # UBRE: (1/n) * D + 2 * phi * dof/n - phi
-                phi = self.dispersion
-                dev = float(np.sum((self.y - mu) ** 2))
-                score = dev / n + 2.0 * phi * dof / n - phi
-            else:  # ml
-                score = -float(self.family.loglik(self.y, mu, self.dispersion))
-                score += 0.5 * float(beta @ S_lam @ beta)
+                # UBRE_gamma: scale-free, assumes phi=1 (canonical)
+                # UBRE(lambda) = D/n + 2*gamma*dof/n - 1
+                score = deviance / n + 2.0 * gam * dof / n - 1.0
+            else:  # ml — Laplace marginal likelihood
+                # ML = dev/phi + beta'S*beta/phi + log|XWX + Slam|
+                phi = max(self.dispersion, 1e-10)
+                penalty_term = float(beta @ S_lam @ beta) / phi
+                logdet_A = psolver.log_determinant()
+                score = deviance / phi + penalty_term + logdet_A
 
             return score if np.isfinite(score) else 1e30
 

@@ -541,3 +541,96 @@ class InverseGaussianFamily(Family):
     def summary(self) -> str:
         """Return summary of Inverse Gaussian family."""
         return f'InverseGaussianFamily(link={self.link})'
+
+
+class BetaFamily(Family):
+    """Beta regression family for proportional responses in (0, 1).
+
+    mgcv equivalent: betar()
+
+    Parameterisation: Y ~ Beta(µφ, (1-µ)φ) where µ ∈ (0,1), φ > 0.
+    Logit link: η = log(µ/(1-µ))
+    Variance: V(µ) = µ(1-µ) / (1+φ)  (dispersion φ estimated from residuals)
+
+    References:
+        - Ferrari & Cribari-Neto (2004): Beta regression for modelling proportions.
+        - Wood (2017) §7.2.
+    """
+
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        mu = np.clip(mu, 1e-10, 1 - 1e-10)
+        return np.log(mu / (1 - mu))
+
+    def linkinv(self, eta: np.ndarray) -> np.ndarray:
+        return 1.0 / (1.0 + np.exp(-np.clip(eta, -500, 500)))
+
+    def dmu_deta(self, eta: np.ndarray) -> np.ndarray:
+        mu = self.linkinv(eta)
+        return np.clip(mu * (1 - mu), 1e-15, None)
+
+    def variance(self, mu: np.ndarray, dispersion: float = 1.0) -> np.ndarray:
+        """V(µ) = µ(1-µ) / (1 + φ).  dispersion = φ."""
+        mu = np.clip(mu, 1e-10, 1 - 1e-10)
+        return mu * (1 - mu) / (1.0 + max(dispersion, 1e-6))
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        return np.clip(y, 0.01, 0.99)
+
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
+        """Beta log-likelihood.
+
+        LL = Σ [ log Γ(φ) - log Γ(µφ) - log Γ((1-µ)φ)
+                 + (µφ - 1) log y + ((1-µ)φ - 1) log(1-y) ]
+        """
+        phi = max(dispersion, 1e-6)
+        mu  = np.clip(mu, 1e-10, 1 - 1e-10)
+        y   = np.clip(y,  1e-10, 1 - 1e-10)
+        a = mu * phi
+        b = (1 - mu) * phi
+        return float(np.sum(
+            special.loggamma(phi)
+            - special.loggamma(a)
+            - special.loggamma(b)
+            + (a - 1) * np.log(y)
+            + (b - 1) * np.log(1 - y)
+        ))
+
+    def summary(self) -> str:
+        return 'BetaFamily(link=logit)'
+
+
+class GaulssFamily(Family):
+    """Gaussian location-scale family (simplified single-predictor version).
+
+    mgcv equivalent: gaulss()  — note: full gaulss models both µ and log(σ)
+    with separate linear predictors.  This implementation fits µ via a standard
+    Gaussian model and estimates σ² from (Pearson) residuals at each PIRLS step,
+    matching the behaviour of a heteroscedastic Gaussian model with constant σ².
+
+    For a full two-predictor gaulss (heteroscedastic smoothing), a separate
+    architectural extension is required.
+    """
+
+    def linkinv(self, eta: np.ndarray) -> np.ndarray:
+        return eta.copy()
+
+    def dmu_deta(self, eta: np.ndarray) -> np.ndarray:
+        return np.ones_like(eta)
+
+    def variance(self, mu: np.ndarray, dispersion: float = 1.0) -> np.ndarray:
+        return np.full_like(mu, max(dispersion, 1e-10))
+
+    def linkfun(self, mu: np.ndarray) -> np.ndarray:
+        return mu.copy()
+
+    def initialize(self, y: np.ndarray) -> np.ndarray:
+        return y.copy()
+
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
+        phi = max(dispersion, 1e-10)
+        resid = y - mu
+        n = len(y)
+        return float(-0.5 * (np.sum(resid ** 2) / phi + n * np.log(2 * np.pi * phi)))
+
+    def summary(self) -> str:
+        return 'GaulssFamily(link=identity)'

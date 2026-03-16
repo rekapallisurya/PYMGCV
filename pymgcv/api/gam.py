@@ -45,13 +45,18 @@ class GAM:
         sp: Optional[Any] = None,
         select: bool = False,
         method: str = 'REML',
+        knots: Optional[dict] = None,
+        gamma: float = 1.0,
+        drop_intercept: bool = False,
+        control: Optional[dict] = None,
     ) -> None:
         """Initialize GAM.
 
         Args:
             formula: Model formula, e.g., 'y ~ s(x1) + s(x2) + x3'.
             data: Input data as DataFrame (optional, can be passed to fit()).
-            family: Distribution family ('gaussian', 'poisson', 'gamma', 'tweedie').
+            family: Distribution family ('gaussian', 'poisson', 'gamma', 'tweedie',
+                'binomial', 'negative.binomial', 'inverse.gaussian', 'beta', 'gaulss').
             offset: Column name for offset vector.
             weights: Column name (str) or array of observation weights.
             sp: Fixed smoothing parameters (array-like, one per smooth term).  When
@@ -60,6 +65,16 @@ class GAM:
             select: If True, add an extra near-zero penalty for each smooth
                 (enables automatic term selection analogous to mgcv's select=TRUE).
             method: Smoothing criterion — 'REML' (default), 'ML', 'GCV', 'UBRE'.
+            knots: Dict mapping variable name to interior knot positions, e.g.
+                {'x': np.linspace(0, 1, 8)}.  Applied to cr/cs/bs/ps smooth terms.
+            gamma: Scale inflation factor for the EDF/DoF in GCV/REML (default 1.0;
+                increase above 1 for sparser fits, analogous to mgcv's gamma=).
+            drop_intercept: If True, omit the intercept column from the design matrix.
+            control: Dict for optimizer tuning. Supported keys:
+                'epsilon' (convergence tol, float),
+                'maxit' (max outer iterations, int),
+                'inner_maxit' (max PIRLS iterations, int),
+                'trace' (verbose output, bool).
 
         Raises:
             ValueError: If formula or family invalid.
@@ -71,6 +86,10 @@ class GAM:
         self.sp = None if sp is None else np.asarray(sp, dtype=np.float64)
         self.select = bool(select)
         self.method = method
+        self.knots: dict = knots or {}
+        self.gamma = float(gamma)
+        self.drop_intercept = bool(drop_intercept)
+        self.control: dict = control or {}
 
         # Fitted attributes
         self.model_matrix = None
@@ -118,7 +137,8 @@ class GAM:
         from pymgcv.penalties.penalty_matrix import PenaltyMatrix
         from pymgcv.distributions.family_base import (
             GaussianFamily, PoissonFamily, GammaFamily, TweedieFamily,
-            BinomialFamily, NegativeBinomialFamily, InverseGaussianFamily
+            BinomialFamily, NegativeBinomialFamily, InverseGaussianFamily,
+            BetaFamily, GaulssFamily,
         )
         from pymgcv.optimizer.magic_optimizer import MAGICOptimizer
         from pymgcv.optimizer.edf import EDFComputer
@@ -128,7 +148,11 @@ class GAM:
         parser = FormulaParser(self.formula)
 
         # 2. Construct design matrix
-        self.model_matrix = ModelMatrix(self.data, self.formula)
+        self.model_matrix = ModelMatrix(
+            self.data, self.formula,
+            knots=self.knots,
+            drop_intercept=self.drop_intercept,
+        )
         X = self.model_matrix.X
         y = self.model_matrix.response_vector()
         offset = self.model_matrix.offset_vector()
@@ -146,9 +170,13 @@ class GAM:
             'gamma': GammaFamily(shape=1.0),
             'tweedie': TweedieFamily(power=1.5),
             'negative.binomial': NegativeBinomialFamily(theta=1.0),
+            'nb': NegativeBinomialFamily(theta=1.0),
             'inverse.gaussian': InverseGaussianFamily(),
+            'beta': BetaFamily(),
+            'betar': BetaFamily(),
+            'gaulss': GaulssFamily(),
         }
-        self.family = family_map.get(self.family_name, GaussianFamily())
+        self.family = family_map.get(self.family_name.lower(), GaussianFamily())
 
         # 5. Build penalty matrices
         # For tensor product smooths, each smooth contributes multiple penalties.
@@ -230,6 +258,11 @@ class GAM:
                 smooth_sizes.append(smooth_sizes[j])
 
         # 6. Optimize smoothing parameters or use fixed sp=
+        # Extract control parameters
+        ctrl_maxit = int(self.control.get('maxit', max_outer_iter))
+        ctrl_inner = int(self.control.get('inner_maxit', max_inner_iter))
+        ctrl_tol   = float(self.control.get('epsilon', 1e-5))
+        ctrl_verbose = bool(self.control.get('trace', verbose))
         initial_dispersion = 1.0
 
         optimizer = MAGICOptimizer(
@@ -253,15 +286,17 @@ class GAM:
                 offset=offset, dispersion=initial_dispersion,
                 weights=optimizer.weights,
             )
-            pirls.solve(max_iter=max_inner_iter, verbose=verbose)
+            pirls.solve(max_iter=ctrl_inner, verbose=ctrl_verbose)
             result = {'coef': pirls.beta, 'smooth_lambda': sp_arr}
         else:
             result = optimizer.optimize(
-                max_outer_iter=max_outer_iter,
-                max_inner_iter=max_inner_iter,
-                verbose=verbose,
+                max_outer_iter=ctrl_maxit,
+                max_inner_iter=ctrl_inner,
+                outer_tol=ctrl_tol,
+                verbose=ctrl_verbose,
                 use_jax=use_gpu and device_info()['available'],
                 method=self.method.lower(),
+                gamma=self.gamma,
             )
 
         self.beta = result['coef']
@@ -478,15 +513,25 @@ class GAM:
         self,
         data: Optional[pd.DataFrame] = None,
         scale: str = 'response',
-    ) -> np.ndarray:
+        type: Optional[str] = None,
+    ) -> 'np.ndarray | dict':
         """Make predictions.
 
         Args:
             data: New data for prediction. If None, use training data.
-            scale: 'link' for linear predictor, 'response' for μ scale.
+            scale: 'link' for linear predictor, 'response' for µ scale.
+                   Ignored when type='terms' or type='lpmatrix'.
+            type: Prediction type (mirrors mgcv's type= argument):
+                  'response' — fitted µ values (default).
+                  'link'     — linear predictor η.
+                  'terms'    — per-smooth contributions as a dict
+                               {smooth_label: array(n)}.
+                  'lpmatrix' — the full prediction design matrix X_new
+                               so that X_new @ beta = η (shape (n, p)).
+                  When type is given it takes priority over scale.
 
         Returns:
-            Predictions array.
+            Array for type='response'/'link'/'lpmatrix', dict for type='terms'.
         """
         if not self.fitted:
             raise ValueError('Model not yet fitted')
@@ -494,23 +539,49 @@ class GAM:
         if data is None:
             data = self.data
 
+        # type= overrides scale= for backwards compat
+        if type is not None:
+            scale = type
+
         # Construct design matrix for new data
         from pymgcv.utils.model_matrix import ModelMatrix
-        mm = ModelMatrix(data, self.formula)
+        from pymgcv.utils.formula_parser import FormulaParser
+        mm = ModelMatrix(
+            data, self.formula,
+            knots=self.knots,
+            drop_intercept=self.drop_intercept,
+        )
         X_new = mm.X
         offset_raw = mm.offset_vector()
         offset_new = offset_raw if offset_raw is not None else np.zeros(len(data))
 
+        if scale == 'lpmatrix':
+            return X_new
+
+        if scale == 'terms':
+            # Return per-smooth contributions
+            parser = FormulaParser(self.formula)
+            result: dict = {}
+            for i, smooth_spec in enumerate(parser.smooth_terms):
+                if i < len(mm.smooth_indices):
+                    sl = mm.smooth_indices[i]
+                    contribution = X_new[:, sl] @ self.beta[sl]
+                    result[smooth_spec.label] = contribution
+            # Also add parametric contribution
+            if mm.param_indices is not None:
+                ps = mm.param_indices
+                result['(parametric)'] = X_new[:, ps] @ self.beta[ps]
+            return result
+
         # Linear predictor
         eta = X_new @ self.beta + offset_new
 
-        # Transform to response scale if needed
-        if scale == 'response':
+        if scale in ('response', 'mu'):
             return self.family.linkinv(eta)
         elif scale == 'link':
             return eta
         else:
-            raise ValueError(f'Invalid scale: {scale}')
+            raise ValueError(f'Invalid scale/type: {scale!r}')
 
     def gam_check(self, type: str = 'deviance', print_summary: bool = True, plot: bool = False) -> dict:
         """Run GAM diagnostic checks (residual tests, convergence, k-adequacy).

@@ -53,6 +53,8 @@ class ModelMatrix:
         formula: str,
         center: bool = True,
         scale: bool = False,
+        knots: Optional[dict] = None,
+        drop_intercept: bool = False,
     ) -> None:
         """Initialize and construct design matrix.
 
@@ -61,6 +63,9 @@ class ModelMatrix:
             formula: Formula string, e.g., 'y ~ s(x1) + s(x2) + x3'.
             center: If True, center parametric terms.
             scale: If True, scale parametric terms to unit variance.
+            knots: Optional dict mapping variable name → array of interior knot
+                positions. Applied to cr/cs/bs/ps smooth terms.
+            drop_intercept: If True, omit the intercept column.
 
         Raises:
             ValueError: If formula or data is invalid.
@@ -90,6 +95,8 @@ class ModelMatrix:
 
         self.center = center
         self.scale = scale
+        self.knots: dict = knots or {}
+        self.drop_intercept = drop_intercept
         self.center_mean: Optional[np.ndarray] = None
         self.scale_std: Optional[np.ndarray] = None
 
@@ -118,7 +125,9 @@ class ModelMatrix:
 
         # 2. Smooth terms
         for smooth_spec in self.formula_parser.smooth_terms:
-            X_smooth, smooth_cols, basis_obj, by_levels = self._construct_smooth_matrix(smooth_spec)
+            X_smooth, smooth_cols, basis_obj, by_levels = self._construct_smooth_matrix(
+                smooth_spec, self.knots
+            )
             if X_smooth.shape[1] > 0:
                 start_col = sum(x.shape[1] for x in X_parts)
                 X_parts.append(X_smooth)
@@ -162,10 +171,11 @@ class ModelMatrix:
         col_names: list[str] = []
 
         # Add intercept by default unless formula explicitly excludes it (with -1)
-        # For now, always include intercept for compatibility
-        intercept_col = np.ones(self.n_obs)
-        X_cols.append(intercept_col)
-        col_names.append('(Intercept)')
+        # or drop_intercept=True is set
+        if not self.drop_intercept:
+            intercept_col = np.ones(self.n_obs)
+            X_cols.append(intercept_col)
+            col_names.append('(Intercept)')
 
         if not self.formula_parser.parametric_terms:
             return np.column_stack(X_cols) if X_cols else np.zeros((self.n_obs, 1)), col_names
@@ -213,7 +223,7 @@ class ModelMatrix:
         return X_param, col_names
 
     def _construct_smooth_matrix(
-        self, smooth_spec: SmoothSpec
+        self, smooth_spec: SmoothSpec, knots: Optional[dict] = None
     ) -> tuple[np.ndarray, list[str], object, Optional[list]]:
         """Construct basis matrix for a smooth term.
 
@@ -226,6 +236,7 @@ class ModelMatrix:
 
         Args:
             smooth_spec: SmoothSpec object describing the smooth term.
+            knots: Optional dict mapping variable name → interior knot positions.
 
         Returns:
             (X_smooth, column_names, basis_object, by_levels)
@@ -233,6 +244,8 @@ class ModelMatrix:
         term_type = smooth_spec.term_type
         basis_code = smooth_spec.basis.lower()
         by_levels = None
+        if knots is None:
+            knots = {}
 
         # ---- Tensor product smooths (te, ti, t2) ----
         if term_type in ('te', 'ti', 't2'):
@@ -294,16 +307,17 @@ class ModelMatrix:
 
             elif basis_code in ('bs', 'ps', 'cr', 'cs'):
                 # B-spline / P-spline / Cubic regression spline
+                user_knots = knots.get(var_name)  # None if not supplied
                 if basis_code in ('cr', 'cs'):
                     from pymgcv.smooth.cubic_spline import CubicRegressionSpline, CubicShrinkageSpline
                     cls = CubicShrinkageSpline if basis_code == 'cs' else CubicRegressionSpline
-                    basis_obj = cls(X_var, k=smooth_spec.k or 10)
+                    basis_obj = cls(X_var, k=smooth_spec.k or 10, knots=user_knots)
                 elif basis_code == 'ps':
                     from pymgcv.smooth.bspline import PSplineBasis
-                    basis_obj = PSplineBasis(X_var, k=smooth_spec.k or 20)
+                    basis_obj = PSplineBasis(X_var, k=smooth_spec.k or 20, knots=user_knots)
                 else:  # bs
                     from pymgcv.smooth.bspline import BSplineBasis
-                    basis_obj = BSplineBasis(X_var, k=smooth_spec.k or 10)
+                    basis_obj = BSplineBasis(X_var, k=smooth_spec.k or 10, knots=user_knots)
                 X_smooth_base = basis_obj.B if hasattr(basis_obj, 'B') else basis_obj.basis_matrix
 
             elif basis_code == 'ad':

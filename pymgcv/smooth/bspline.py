@@ -153,21 +153,35 @@ class BSplineBasis:
         penorder: int = 2,
         # Legacy alias: order = degree + 1
         order: Optional[int] = None,
+        knots: Optional[np.ndarray] = None,
     ) -> None:
         self.X = np.asarray(X, dtype=float).ravel()
         self.n = len(self.X)
         # Support legacy 'order' parameter
         if order is not None:
             degree = order - 1
-        self.k = k
         self.degree = degree
         self.order = degree + 1  # keep old attribute
         self.penorder = penorder
 
-        if k <= degree:
-            raise ValueError(f'k={k} must be > degree={degree}')
+        if knots is not None:
+            # User-specified interior knots: build full clamped knot vector
+            interior = np.sort(np.asarray(knots, dtype=float).ravel())
+            x_min, x_max = float(self.X.min()), float(self.X.max())
+            interior = interior[(interior > x_min) & (interior < x_max)]
+            t = np.concatenate([
+                np.full(degree + 1, x_min),
+                interior,
+                np.full(degree + 1, x_max),
+            ])
+            self.knots = t
+            self.k = len(t) - degree - 1
+        else:
+            self.k = k
+            if k <= degree:
+                raise ValueError(f'k={k} must be > degree={degree}')
+            self.knots = _make_knots(self.X, k, degree)
 
-        self.knots = _make_knots(self.X, k, degree)
         self.B = _bspline_design_matrix(self.X, self.knots, degree)
         self.S = _bspline_integral_penalty(self.knots, degree, penorder)
 
@@ -206,30 +220,43 @@ class PSplineBasis:
         k: int = 20,
         degree: int = 3,
         m: int = 2,
+        knots: Optional[np.ndarray] = None,
     ) -> None:
         self.X = np.asarray(X, dtype=float).ravel()
         self.n = len(self.X)
-        self.k = k
         self.degree = degree
         self.m = m
-
-        if k <= degree:
-            raise ValueError(f'k={k} must be > degree={degree}')
 
         x_min, x_max = float(self.X.min()), float(self.X.max())
         if x_min == x_max:
             x_max = x_min + 1.0
-        n_interior = k - degree - 1
-        interior = np.linspace(x_min, x_max, n_interior + 2)[1:-1] if n_interior > 0 else np.array([])
-        t = np.concatenate([
-            np.full(degree + 1, x_min),
-            interior,
-            np.full(degree + 1, x_max),
-        ])
-        self.knots = t
-        self.B = _bspline_design_matrix(self.X, t, degree)
 
-        D = _diff_matrix(k, m)
+        if knots is not None:
+            # User-specified evenly-spaced or custom interior knots
+            interior = np.sort(np.asarray(knots, dtype=float).ravel())
+            interior = interior[(interior > x_min) & (interior < x_max)]
+            t = np.concatenate([
+                np.full(degree + 1, x_min),
+                interior,
+                np.full(degree + 1, x_max),
+            ])
+            self.knots = t
+            self.k = len(t) - degree - 1
+        else:
+            self.k = k
+            if k <= degree:
+                raise ValueError(f'k={k} must be > degree={degree}')
+            n_interior = k - degree - 1
+            interior = np.linspace(x_min, x_max, n_interior + 2)[1:-1] if n_interior > 0 else np.array([])
+            t = np.concatenate([
+                np.full(degree + 1, x_min),
+                interior,
+                np.full(degree + 1, x_max),
+            ])
+            self.knots = t
+
+        self.B = _bspline_design_matrix(self.X, self.knots, degree)
+        D = _diff_matrix(self.k, m)
         self.S = D.T @ D
 
     def basis_matrix(self) -> np.ndarray:
