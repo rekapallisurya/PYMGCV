@@ -75,6 +75,23 @@ class REMLObjective:
         self.n, self.p = self.X.shape
         self.n_smooth = len(S_list)
 
+        # Precompute per-penalty eigenvalues (S_j never changes after construction)
+        self._S_eigs_list: list[np.ndarray] = [
+            np.linalg.eigvalsh(S_j) for S_j in self.S_list
+        ]
+        self._S_pos_eigs_list: list[np.ndarray] = [
+            eigs[eigs > 1e-10] for eigs in self._S_eigs_list
+        ]
+        self._penalty_rank_list: list[int] = [
+            int(len(pos)) for pos in self._S_pos_eigs_list
+        ]
+        self._log_S_base: list[float] = [
+            float(np.sum(np.log(pos))) if len(pos) > 0 else 0.0
+            for pos in self._S_pos_eigs_list
+        ]
+        # Cache for Mp (null space dim of S_combined); keyed by rounded lambda
+        self._mp_cache: tuple | None = None
+
     def objective(self, beta: np.ndarray, log_lambda: np.ndarray) -> float:
         r"""Compute REML score (to be minimised).
 
@@ -287,8 +304,12 @@ class REMLObjective:
         # ---- Objective ----
         is_gaussian = isinstance(self.family, GaussianFamily)
         if is_gaussian:
-            S_eigs = np.linalg.eigvalsh(S_combined)
-            Mp = int(np.sum(S_eigs < 1e-10))
+            lam_key = tuple(np.round(lambda_vec, 12))
+            if self._mp_cache is None or self._mp_cache[0] != lam_key:
+                S_eigs = np.linalg.eigvalsh(S_combined)
+                Mp = int(np.sum(S_eigs < 1e-10))
+                self._mp_cache = (lam_key, Mp)
+            Mp = self._mp_cache[1]
             n_eff = max(self.n - Mp, 1)
             rss_p = deviance + penalty
             reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - log_S_plus
@@ -335,25 +356,19 @@ class REMLObjective:
     def _penalty_log_determinant(self, lambda_vec: np.ndarray) -> float:
         r"""Compute log|S_lambda^+| = sum_j (rank_j * log(lambda_j) + log|S_j^+|).
 
-        The generalized determinant is the product of positive eigenvalues
-        of the combined weighted penalty.
+        Uses precomputed per-penalty eigenvalues (cached in __init__).
         """
         log_det = 0.0
-        for j, S_j in enumerate(self.S_list):
-            eigs = np.linalg.eigvalsh(S_j)
-            pos_eigs = eigs[eigs > 1e-10]
-            if len(pos_eigs) > 0:
-                log_det += len(pos_eigs) * np.log(max(lambda_vec[j], 1e-300))
-                log_det += np.sum(np.log(pos_eigs))
+        for j in range(self.n_smooth):
+            r = self._penalty_rank_list[j]
+            if r > 0:
+                log_det += r * np.log(max(lambda_vec[j], 1e-300))
+                log_det += self._log_S_base[j]
         return log_det
 
     def _penalty_ranks(self) -> list[int]:
-        """Compute rank (number of positive eigenvalues) for each penalty."""
-        ranks = []
-        for S_j in self.S_list:
-            eigs = np.linalg.eigvalsh(S_j)
-            ranks.append(int(np.sum(eigs > 1e-10)))
-        return ranks
+        """Return precomputed rank (number of positive eigenvalues) for each penalty."""
+        return list(self._penalty_rank_list)
 
 
 def compute_reml(

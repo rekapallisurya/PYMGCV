@@ -42,6 +42,9 @@ class GAM:
         family: str = 'gaussian',
         offset: Optional[str] = None,
         weights: Optional[Any] = None,
+        sp: Optional[Any] = None,
+        select: bool = False,
+        method: str = 'REML',
     ) -> None:
         """Initialize GAM.
 
@@ -51,6 +54,12 @@ class GAM:
             family: Distribution family ('gaussian', 'poisson', 'gamma', 'tweedie').
             offset: Column name for offset vector.
             weights: Column name (str) or array of observation weights.
+            sp: Fixed smoothing parameters (array-like, one per smooth term).  When
+                provided the MAGIC outer loop is skipped and the model is fitted at
+                those fixed values.
+            select: If True, add an extra near-zero penalty for each smooth
+                (enables automatic term selection analogous to mgcv's select=TRUE).
+            method: Smoothing criterion — 'REML' (default), 'ML', 'GCV', 'UBRE'.
 
         Raises:
             ValueError: If formula or family invalid.
@@ -59,6 +68,9 @@ class GAM:
         self.data = data
         self.family_name = family
         self.weights_col = weights
+        self.sp = None if sp is None else np.asarray(sp, dtype=np.float64)
+        self.select = bool(select)
+        self.method = method
 
         # Fitted attributes
         self.model_matrix = None
@@ -206,7 +218,18 @@ class GAM:
             smooth_starts = [0]
             smooth_sizes = [p_total]
 
-        # 6. Optimize smoothing parameters via MAGIC
+        # select=True: add a small null-space penalty for each smooth term so that
+        # the outer optimiser can shrink terms all the way to zero (mgcv select=TRUE)
+        if self.select:
+            for j in range(len(S_list)):
+                S_j = S_list[j]
+                diag_mean = np.mean(np.diag(S_j))
+                eps_pen = max(diag_mean * 1e-4, 1e-6) * np.eye(p_total)
+                S_list.append(eps_pen)
+                smooth_starts.append(smooth_starts[j])
+                smooth_sizes.append(smooth_sizes[j])
+
+        # 6. Optimize smoothing parameters or use fixed sp=
         initial_dispersion = 1.0
 
         optimizer = MAGICOptimizer(
@@ -216,12 +239,30 @@ class GAM:
             offset=offset, dispersion=initial_dispersion
         )
         optimizer.weights = weights if not np.all(weights == 1.0) else None
-        result = optimizer.optimize(
-            max_outer_iter=max_outer_iter,
-            max_inner_iter=max_inner_iter,
-            verbose=verbose,
-            use_jax=use_gpu and device_info()['available']
-        )
+
+        if self.sp is not None:
+            # Fixed smoothing parameters: run a single PIRLS pass, skip MAGIC
+            from pymgcv.optimizer.pirls import PIRLSSolver
+            sp_arr = np.asarray(self.sp, dtype=np.float64)
+            if len(sp_arr) < len(S_list):
+                # Pad with zeros for any select-added penalties
+                sp_arr = np.concatenate([sp_arr, np.zeros(len(S_list) - len(sp_arr))])
+            pirls = PIRLSSolver(
+                X=X, y=y, family=self.family,
+                S_list=S_list, lambda_vec=sp_arr,
+                offset=offset, dispersion=initial_dispersion,
+                weights=optimizer.weights,
+            )
+            pirls.solve(max_iter=max_inner_iter, verbose=verbose)
+            result = {'coef': pirls.beta, 'smooth_lambda': sp_arr}
+        else:
+            result = optimizer.optimize(
+                max_outer_iter=max_outer_iter,
+                max_inner_iter=max_inner_iter,
+                verbose=verbose,
+                use_jax=use_gpu and device_info()['available'],
+                method=self.method.lower(),
+            )
 
         self.beta = result['coef']
         self.smoothing_parameters = result['smooth_lambda']
@@ -470,6 +511,32 @@ class GAM:
             return eta
         else:
             raise ValueError(f'Invalid scale: {scale}')
+
+    def gam_check(self, type: str = 'deviance', print_summary: bool = True, plot: bool = False) -> dict:
+        """Run GAM diagnostic checks (residual tests, convergence, k-adequacy).
+
+        Args:
+            type: Residual type ('deviance', 'pearson', 'response').
+            print_summary: Print summary to stdout.
+            plot: Plot diagnostic plots (requires matplotlib).
+
+        Returns:
+            Dict with keys 'residuals', 'k_check', 'tests', 'converged'.
+        """
+        from pymgcv.api.gam_check import gam_check as _gam_check
+        return _gam_check(self, type=type, print_summary=print_summary, plot=plot)
+
+    def k_check(self, subsample: Optional[int] = None) -> 'pd.DataFrame':
+        """Check adequacy of basis dimensions for each smooth term.
+
+        Args:
+            subsample: If set, use this many random rows for the test (faster for large n).
+
+        Returns:
+            DataFrame with columns k, k', edf, p-value for each smooth.
+        """
+        from pymgcv.api.gam_check import k_check as _k_check
+        return _k_check(self, subsample=subsample)
 
     def __repr__(self) -> str:
         """String representation."""
