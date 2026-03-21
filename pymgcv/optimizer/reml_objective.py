@@ -50,6 +50,7 @@ class REMLObjective:
         smooth_sizes: list[int],
         offset: Optional[np.ndarray] = None,
         dispersion: float = 1.0,
+        gamma: float = 1.0,
     ) -> None:
         """Initialize REML objective.
 
@@ -62,6 +63,11 @@ class REMLObjective:
             smooth_sizes: Basis dimension for each smooth.
             offset: Offset vector.
             dispersion: Dispersion parameter φ.
+            gamma: EDF inflation factor (Wood 2011). gamma > 1 multiplies the
+                log|S^+| term so that near-zero-signal smooths are pushed more
+                strongly toward λ → ∞ (EDF → 0). Only the log|S^+| term in the
+                objective and the rank term in the gradient are scaled; the
+                Hessian is unaffected.
         """
         self.X = np.asarray(X, dtype=np.float64)
         self.y = np.asarray(y, dtype=np.float64)
@@ -71,6 +77,7 @@ class REMLObjective:
         self.smooth_sizes = smooth_sizes
         self.offset = np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
         self.dispersion = float(dispersion)
+        self.gamma = float(gamma)
 
         self.n, self.p = self.X.shape
         self.n_smooth = len(S_list)
@@ -142,15 +149,19 @@ class REMLObjective:
 
         # Check if Gaussian (profiled REML)
         from pymgcv.distributions.family_base import GaussianFamily
+        S_eigs = np.linalg.eigvalsh(S_combined)
+        Mp = int(np.sum(S_eigs < 1e-10))
+        n_eff = max(self.n - Mp, 1)
         if isinstance(self.family, GaussianFamily):
-            # Null space dimension Mp = # unpenalized parameters
-            S_eigs = np.linalg.eigvalsh(S_combined)
-            Mp = int(np.sum(S_eigs < 1e-10))
-            n_eff = max(self.n - Mp, 1)
             rss_p = deviance + penalty  # = ||y - Xb||^2 + b'Sb for Gaussian
-            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - log_S_plus
+            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
         else:
-            reml = (deviance + penalty) / self.dispersion + logdet_A - log_S_plus
+            # Pseudo-Gaussian profiled REML (consistent with objective_gradient_hessian).
+            # rss_pseudo = (working residuals)'W(working residuals) + β'Sβ
+            # This is the PIRLS pseudo-Gaussian quantity; phi enters only through W.
+            z_resid = (self.y - mu) / np.maximum(dmu_deta, 1e-10)
+            rss_p = float(np.sum(w * z_resid ** 2)) + penalty
+            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
 
         return reml
 
@@ -193,26 +204,25 @@ class REMLObjective:
 
             # Check if Gaussian (profiled REML gradient)
             from pymgcv.distributions.family_base import GaussianFamily
-            is_gaussian = isinstance(self.family, GaussianFamily)
+            penalty = float(beta @ S_combined @ beta)
+            S_eigs = np.linalg.eigvalsh(S_combined)
+            Mp = int(np.sum(S_eigs < 1e-10))
+            n_eff = max(self.n - Mp, 1)
 
-            if is_gaussian:
+            if isinstance(self.family, GaussianFamily):
                 deviance = -2.0 * self.family.loglik(self.y, mu, self.dispersion)
-                penalty = float(beta @ S_combined @ beta)
                 rss_p = deviance + penalty
-                S_eigs = np.linalg.eigvalsh(S_combined)
-                Mp = int(np.sum(S_eigs < 1e-10))
-                n_eff = max(self.n - Mp, 1)
+            else:
+                # Pseudo-Gaussian rss
+                z_resid = (self.y - mu) / np.maximum(dmu_deta, 1e-10)
+                rss_p = float(np.sum(w * z_resid ** 2)) + penalty
 
             grad = np.zeros(self.n_smooth)
             for j, S_j in enumerate(self.S_list):
                 trace_term = lambda_vec[j] * np.trace(A_inv @ S_j)
-                if is_gaussian:
-                    bSb = float(beta @ S_j @ beta)
-                    fit_term = lambda_vec[j] * n_eff * bSb / max(rss_p, 1e-300)
-                    grad[j] = fit_term + trace_term - ranks[j]
-                else:
-                    penalty_term = lambda_vec[j] * float(beta @ S_j @ beta) / self.dispersion
-                    grad[j] = penalty_term + trace_term - ranks[j]
+                bSb = float(beta @ S_j @ beta)
+                fit_term = lambda_vec[j] * n_eff * bSb / max(rss_p, 1e-300)
+                grad[j] = fit_term + trace_term - self.gamma * ranks[j]
 
             return grad
         except Exception:
@@ -301,20 +311,34 @@ class REMLObjective:
         penalty = float(beta @ S_combined @ beta)
         ranks = self._penalty_ranks()
 
+        # ---- Null-space dimension (shared by Gaussian and pseudo-Gaussian REML) ----
+        lam_key = tuple(np.round(lambda_vec, 12))
+        if self._mp_cache is None or self._mp_cache[0] != lam_key:
+            S_eigs = np.linalg.eigvalsh(S_combined)
+            Mp = int(np.sum(S_eigs < 1e-10))
+            self._mp_cache = (lam_key, Mp)
+        Mp = self._mp_cache[1]
+        n_eff = max(self.n - Mp, 1)
+
         # ---- Objective ----
         is_gaussian = isinstance(self.family, GaussianFamily)
         if is_gaussian:
-            lam_key = tuple(np.round(lambda_vec, 12))
-            if self._mp_cache is None or self._mp_cache[0] != lam_key:
-                S_eigs = np.linalg.eigvalsh(S_combined)
-                Mp = int(np.sum(S_eigs < 1e-10))
-                self._mp_cache = (lam_key, Mp)
-            Mp = self._mp_cache[1]
-            n_eff = max(self.n - Mp, 1)
             rss_p = deviance + penalty
-            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - log_S_plus
+            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
         else:
-            reml = (deviance + penalty) / self.dispersion + logdet_A - log_S_plus
+            # Pseudo-Gaussian (PIRLS) profiled REML — same structure as Gaussian but
+            # evaluated on pseudo-Gaussian working quantities.  This is how mgcv
+            # selects λ for GLMs: PIRLS converts the GLM into a pseudo-Gaussian
+            # problem, and the Gaussian profiled REML is maximised on that problem.
+            #
+            # rss_pseudo = (working residuals)' W (working residuals) + β' Sλ β
+            #            ≈ Pearson_SS / φ  +  penalty
+            # The n_eff scaling in the loglik term means φ appears only implicitly
+            # through the working weights W, so no double-division issue arises.
+            z_resid = (self.y - mu) / np.maximum(dmu_deta, 1e-10)  # working residuals
+            rss_working = float(np.sum(w * z_resid ** 2))
+            rss_p = rss_working + penalty
+            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
 
         if not np.isfinite(reml):
             return float('nan'), np.full(self.n_smooth, np.nan), np.full((self.n_smooth, self.n_smooth), np.nan)
@@ -328,19 +352,21 @@ class REMLObjective:
 
         grad = np.zeros(self.n_smooth)
         H = np.zeros((self.n_smooth, self.n_smooth))
+        bSb_arr = np.array([float(beta @ self.S_list[j] @ beta) for j in range(self.n_smooth)])
+        fit_terms = lambda_vec * n_eff * bSb_arr / max(rss_p, 1e-300)
 
         for j in range(self.n_smooth):
             trace_term = lambda_vec[j] * float(np.trace(AinvS[j]))
-            if is_gaussian:
-                bSb = float(beta @ self.S_list[j] @ beta)
-                fit_term = lambda_vec[j] * n_eff * bSb / max(rss_p, 1e-300)
-                grad[j] = fit_term + trace_term - ranks[j]
-            else:
-                penalty_term = lambda_vec[j] * float(beta @ self.S_list[j] @ beta) / self.dispersion
-                grad[j] = penalty_term + trace_term - ranks[j]
+            # Both Gaussian and pseudo-Gaussian (non-Gaussian PIRLS) use the same
+            # gradient formula: n_eff * λ_j * bSb / rss_pseudo + trace - γ * rank
+            grad[j] = fit_terms[j] + trace_term - self.gamma * ranks[j]
 
             for k in range(j, self.n_smooth):
+                # logdet Hessian (positive definite)
                 h_jk = lambda_vec[j] * lambda_vec[k] * float(np.trace(AinvS[j] @ AinvS[k]))
+                # Fit-term Hessian correction (negative semi-definite, from d²(n_eff·log rss)/dρ_j dρ_k)
+                # = -n_eff * (λ_j bSb_j)(λ_k bSb_k) / rss_p²  (at fixed β, envelope theorem)
+                h_jk -= fit_terms[j] * fit_terms[k] / max(n_eff * rss_p, 1e-300)
                 H[j, k] = h_jk
                 H[k, j] = h_jk
 

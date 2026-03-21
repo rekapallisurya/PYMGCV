@@ -269,12 +269,12 @@ class PIRLSSolver:
             self.beta = beta_cand
 
             # ----------------------------------------------------------
-            # 5. Deviance at updated beta
+            # 5. Penalized deviance at updated beta (matches mgcv's pdev)
             # ----------------------------------------------------------
             self.eta = self.X @ self.beta + self.offset
             self.mu = self.family.linkinv(self.eta)
             self._clip_mu()
-            dev_new = self._compute_deviance()
+            dev_new = self._compute_penalized_deviance()
 
             # Track per-iteration history (step_size=1 when no halving happened)
             self.dev_history.append(dev_new)
@@ -283,11 +283,11 @@ class PIRLSSolver:
 
             if verbose:
                 rel = abs(dev_old - dev_new) / (0.1 + abs(dev_new))
-                print(f'  PIRLS iter {it:2d}: dev={dev_new:.6f}  '
-                      f'Δdev/dev={rel:.2e}')
+                print(f'  PIRLS iter {it:2d}: pdev={dev_new:.6f}  '
+                      f'Δpdev/pdev={rel:.2e}')
 
             # ----------------------------------------------------------
-            # 6. mgcv-style convergence check
+            # 6. mgcv-style convergence check on penalized deviance
             # ----------------------------------------------------------
             if abs(dev_old - dev_new) / (0.1 + abs(dev_new)) < tol:
                 self.converged = True
@@ -329,9 +329,10 @@ class PIRLSSolver:
         """
         direction = beta_cand - beta_old
 
-        # Baseline deviance at the current (old) beta
-        # Note: self.mu was already updated to reflect self.beta = beta_old
-        dev_curr = self._compute_deviance()
+        # Penalized deviance at old beta: -2*loglik + beta'S*beta / phi
+        # (matches mgcv's pdev criterion; penalty term ensures we accept smoother steps)
+        pdev_curr = (-2.0 * self.family.loglik(self.y, self.mu, self.dispersion)
+                     + float(beta_old @ self.S @ beta_old) / self.dispersion)
 
         step = 1.0
         for _ in range(max_halvings):
@@ -353,18 +354,20 @@ class PIRLSSolver:
                 step *= 0.5
                 continue
 
-            # Temporarily update state to evaluate deviance
-            mu_save, beta_save = self.mu.copy(), self.beta.copy()
-            self.mu = mu_try
-            self._clip_mu()
-            self.beta = beta_try
-            dev_try = self._compute_deviance()
-            self.mu = mu_save
-            self.beta = beta_save
+            # Clip mu_try for the deviance evaluation
+            family_name = type(self.family).__name__.lower()
+            if 'binomial' in family_name:
+                mu_try = np.clip(mu_try, 1e-6, 1.0 - 1e-6)
+            elif any(nm in family_name for nm in ('poisson', 'gamma', 'tweedie', 'negative', 'inverse')):
+                mu_try = np.maximum(mu_try, 1e-6)
 
-            # Accept if deviance did not increase by more than 0.0001 %
-            # (matches mgcv: dev > devold * 1.0000001  => step.failed)
-            if dev_try <= dev_curr * 1.0000001 + 1e-10:
+            # Penalized deviance at beta_try
+            pdev_try = (-2.0 * self.family.loglik(self.y, mu_try, self.dispersion)
+                        + float(beta_try @ self.S @ beta_try) / self.dispersion)
+
+            # Accept if penalized deviance didn't significantly increase
+            # (matches mgcv: step.failed when pdev > pdev_old * 1.0000001 + eps)
+            if pdev_try <= pdev_curr + abs(pdev_curr) * 1e-7 + 1e-10:
                 return beta_try
 
             step *= 0.5
@@ -373,8 +376,18 @@ class PIRLSSolver:
         return beta_old
 
     def _compute_deviance(self) -> float:
-        """Compute deviance -2 * loglik(y, mu, phi) at current mu."""
+        """Compute unpenalized deviance -2 * loglik(y, mu, phi) at current mu."""
         return -2.0 * self.family.loglik(self.y, self.mu, self.dispersion)
+
+    def _compute_penalized_deviance(self) -> float:
+        """Compute penalized deviance = -2*loglik + beta'S*beta/phi.
+
+        This matches mgcv's pdev convergence criterion, which is critical for
+        correct PIRLS behaviour when warm-starting from a different lambda.
+        """
+        unpen = -2.0 * self.family.loglik(self.y, self.mu, self.dispersion)
+        pen = float(self.beta @ self.S @ self.beta) / self.dispersion
+        return unpen + pen
 
     def coefficients(self) -> np.ndarray:
         """Return fitted coefficients."""

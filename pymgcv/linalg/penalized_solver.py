@@ -28,6 +28,8 @@ from __future__ import annotations
 import numpy as np
 from scipy import linalg
 
+from .native_engine import col_squared_norms
+
 
 class PenalizedSolver:
     """Cholesky-based factorization of A = X'WX + S with operation reuse.
@@ -221,7 +223,7 @@ class PenalizedSolver:
                            = ((Vt.T)**2) @ s_inv
         """
         if self._L_inv is not None:
-            return np.sum(self._L_inv ** 2, axis=0)
+            return col_squared_norms(self._L_inv)
         if self._qr is not None:
             # A = Q R P^T  =>  A^{-1} = P R^{-T} Q^T  (A symmetric positive definite)
             # diag(A^{-1})_j = ||col j of (P R^{-1})||^2

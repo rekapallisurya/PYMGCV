@@ -110,7 +110,7 @@ class GAM:
     def fit(
         self,
         data: Optional[pd.DataFrame] = None,
-        max_outer_iter: int = 10,
+        max_outer_iter: int = 200,
         max_inner_iter: int = 25,
         verbose: bool = False,
         use_gpu: bool = True,
@@ -296,7 +296,12 @@ class GAM:
                 verbose=ctrl_verbose,
                 use_jax=use_gpu and device_info()['available'],
                 method=self.method.lower(),
-                gamma=self.gamma,
+                # Cap γ at 1.0 for REML optimisation: the pseudo-Gaussian criterion
+                # is bounded below (λ→∞ stable) only at γ≤1 because logdet_A and
+                # log|S|+ cancel exactly at γ=1.  For γ>1 the criterion diverges to
+                # −∞, driving λ to the clip limit.  The user-specified γ is preserved
+                # in per-smooth tests and dispersion estimation.
+                gamma=min(float(self.gamma), 1.0),
             )
 
         self.beta = result['coef']
@@ -310,7 +315,83 @@ class GAM:
                 S_combined += lam * S_j_full
         self._S_combined = S_combined
 
-        edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0)
+        # 7a. For non-Gaussian families: a second optimizer pass at the estimated φ
+        #     refines λ for the actual dispersion scale.  The first pass runs at φ=1
+        #     (pseudo-Gaussian REML), giving a coarse φ estimate.  The second pass
+        #     re-selects λ with rss_pseudo ≈ n_eff, which is the right balance point.
+        #
+        #     The γ cap (≤ 1.0) also applies here: for γ > 1 the pseudo-Gaussian
+        #     criterion diverges to −∞ as λ → ∞, so all λ values pile at the clip
+        #     limit and EDF collapses to 1 per smooth.  At γ = 1 the criterion is
+        #     bounded and the Newton optimiser converges to a finite minimum.
+        from pymgcv.distributions.family_base import GaussianFamily as _GF, PoissonFamily as _PF
+        _needs_phi_refit = not isinstance(self.family, (_GF, _PF)) and self.sp is None
+        phi_refit = 1.0
+        if _needs_phi_refit:
+            # Estimate φ from first-pass residuals
+            _eta_p1 = X @ self.beta + (offset if offset is not None else 0.0)
+            _mu_p1 = self.family.linkinv(_eta_p1)
+            _var_unit_p1 = np.maximum(self.family.variance(_mu_p1, 1.0), 1e-10)
+            _pearson_p1 = float(np.sum((y - _mu_p1) ** 2 / _var_unit_p1))
+            _edf_p1 = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0).total_edf()
+            phi_refit = max(_pearson_p1 / max(len(y) - _edf_p1, 1.0), 1e-6)
+
+            # Second optimizer pass at estimated φ, warm-started from first pass
+            _lam_floor = np.log(max(phi_refit, 1.0) / max(len(y), 1.0))
+            warm_log = np.maximum(np.log(np.maximum(self.smoothing_parameters, 1e-10)), _lam_floor)
+            opt2 = MAGICOptimizer(
+                X=X, y=y, family=self.family, S_list=S_list,
+                smooth_starts=smooth_starts, smooth_sizes=smooth_sizes,
+                offset=offset, dispersion=phi_refit,
+            )
+            opt2.weights = optimizer.weights
+            opt2.lambda_log = warm_log
+            opt2.lambda_vec = np.exp(warm_log)
+            result2 = opt2.optimize(
+                max_outer_iter=ctrl_maxit,
+                max_inner_iter=ctrl_inner,
+                outer_tol=ctrl_tol,
+                verbose=ctrl_verbose,
+                use_jax=use_gpu and device_info()['available'],
+                method=self.method.lower(),
+                gamma=min(float(self.gamma), 1.0),
+            )
+            self.beta = result2['coef']
+            self.smoothing_parameters = result2['smooth_lambda']
+
+            # Rebuild S_combined with refined λ
+            S_combined = np.zeros((p_total, p_total))
+            for j_pen, S_j_full in enumerate(S_list):
+                if j_pen < len(self.smoothing_parameters):
+                    lam = self.smoothing_parameters[j_pen]
+                    S_combined += lam * S_j_full
+            self._S_combined = S_combined
+
+        # 7b. Compute EDF with two-pass φ/EDF refinement (matches mgcv gam.fit3).
+        #
+        # The REML optimizer iteratively estimates φ alongside λ (see magic_optimizer.py).
+        # For Gaussian and Poisson (φ=1 by definition) use unit dispersion.
+        # For other families, use the optimizer's final φ estimate; then refine via
+        # one additional Pearson step to ensure EDF and φ are mutually consistent.
+        from pymgcv.distributions.family_base import GaussianFamily, PoissonFamily
+        _estimate_phi = not isinstance(self.family, (GaussianFamily, PoissonFamily))
+
+        # Pass 1: EDF at optimizer's estimated φ (or phi_refit for non-Gaussian)
+        phi_from_opt = phi_refit if _needs_phi_refit else float(result.get('dispersion', 1.0))
+        edf_comp_1 = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=phi_from_opt)
+        edf_1 = edf_comp_1.total_edf()
+
+        if _estimate_phi:
+            _eta = X @ self.beta + (offset if offset is not None else 0.0)
+            mu_fit_ = self.family.linkinv(_eta)
+            var_unit_ = np.maximum(self.family.variance(mu_fit_, 1.0), 1e-10)
+            _pearson_ss = float(np.sum((y - mu_fit_) ** 2 / var_unit_))
+            phi_1 = max(_pearson_ss / max(len(y) - edf_1, 1.0), 1e-6)
+            # Pass 2: self-consistent φ/EDF
+            edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=phi_1)
+        else:
+            edf_computer = edf_comp_1
+
         self.edf = edf_computer.total_edf()
 
         # Per-smooth EDF via influence matrix diagonal

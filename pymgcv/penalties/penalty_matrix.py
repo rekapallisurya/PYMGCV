@@ -169,8 +169,14 @@ class PenaltyMatrix:
         Returns:
             Effective degrees of freedom from this smooth.
         """
-        # TODO: Implement proper EDF contribution
-        return float(self.basis_dim)
+        # EDF contribution: trace(H_jj) where H_jj is the sub-hat-matrix
+        # for columns corresponding to this smooth.  H is the full hat matrix
+        # A^{-1} X'WX; here we receive a pre-sliced block.
+        try:
+            # H must be the square diagonal block for this smooth, shape (p_j, p_j)
+            return float(np.trace(H))
+        except Exception:
+            return float(self.basis_dim)
 
 
 class PenaltyMatrixSet:

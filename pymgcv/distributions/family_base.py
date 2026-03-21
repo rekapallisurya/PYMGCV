@@ -269,31 +269,117 @@ class TweedieFamily(Family):
         return np.log(np.maximum(mu, 1e-300))
 
     def initialize(self, y: np.ndarray) -> np.ndarray:
-        """Starting mu for Tweedie: max(y, 0.1)."""
-        return np.maximum(y, 0.1)
+        """Starting mu for Tweedie: (y + mean(y)) / 2, matching mgcv.
+
+        Using max(y, 0.1) puts 80-90 % of zero-claim observations at μ=0.1,
+        far below the sample mean.  This causes huge (y-μ)/μ working responses
+        for positive observations in the first PIRLS iteration, leading to
+        step-halving to a wrong local minimum.
+
+        mgcv's identical initialisation (see family.R, tweedie entry):
+            mustart <- (y + mean(y)) / 2
+        ensures all starting μ values are within the same order of magnitude
+        as the sample mean, giving PIRLS a numerically stable starting point.
+        """
+        y = np.asarray(y, dtype=np.float64)
+        mu_start = (y + np.maximum(y.mean(), 1e-6)) / 2.0
+        return np.maximum(mu_start, 1e-6)
+
+    @staticmethod
+    def _tweedie_log_wright(y_pos: np.ndarray, phi: float, p: float) -> np.ndarray:
+        """Compute log W(y, phi, p) — the Tweedie normalising constant for y > 0.
+
+        Implements the series from Dunn & Smyth (2005) "Series evaluation of
+        Tweedie exponential dispersion model densities", Stat & Comput 15:267-280.
+
+        The j-th log-weight is (Dunn & Smyth eq. 3):
+
+            log t_j = (j·α − 1)·log y  − log Γ(j+1) − log Γ(j·α)
+                      − j·log(φ·(2−p)) − j·α·log(φ·(p−1))
+
+        where α = (2−p)/(p−1).  The sum is evaluated in log space via
+        log-sum-exp for numerical stability.
+
+        Args:
+            y_pos: Strictly positive responses, shape (m,).
+            phi:   Dispersion parameter φ > 0.
+            p:     Tweedie power, 1 < p < 2.
+
+        Returns:
+            log W(y_i, phi, p) for each y_i, shape (m,).
+        """
+        from scipy.special import gammaln
+
+        alpha       = (2.0 - p) / (p - 1.0)
+        log_phi_2mp = np.log(phi * (2.0 - p))
+        log_phi_pm1 = np.log(phi * (p - 1.0))
+
+        y_pos = np.asarray(y_pos, dtype=np.float64)
+        log_y = np.log(y_pos)
+
+        # Upper Poisson rate (dominant term index) for the largest y.
+        # lambda_i = y_i^{2-p} / (phi*(2-p)); series dominated around j ~ lambda_i.
+        lambda_max = float(np.max(y_pos ** (2.0 - p))) / (phi * (2.0 - p))
+        j_max = int(np.ceil(lambda_max + 10.0 * np.sqrt(max(lambda_max, 0.5)))) + 50
+        j_max = min(max(j_max, 30), 500)
+
+        j_arr          = np.arange(1, j_max + 1, dtype=np.float64)  # (J,)
+        gammaln_jp1    = gammaln(j_arr + 1.0)     # log j!
+        gammaln_jalpha = gammaln(j_arr * alpha)    # log Γ(j·α)
+
+        # Constant part of log t_j (does not depend on y)
+        j_const = (- j_arr * log_phi_2mp
+                   - j_arr * alpha * log_phi_pm1
+                   - gammaln_jp1
+                   - gammaln_jalpha)               # (J,)
+
+        # Full log t_j(y_i): shape (N, J)
+        log_t = ((j_arr[np.newaxis, :] * alpha - 1.0) * log_y[:, np.newaxis]
+                 + j_const[np.newaxis, :])
+
+        # Numerically stable log-sum-exp over j axis
+        max_lt = np.max(log_t, axis=1, keepdims=True)
+        log_W  = max_lt[:, 0] + np.log(np.sum(np.exp(log_t - max_lt), axis=1))
+        return log_W
 
     def loglik(
         self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
     ) -> float:
-        """Log-likelihood for Tweedie distribution.
+        """Log-likelihood for Tweedie distribution (exponential family form).
 
-        Approximation for 1 < p < 2 (compound Poisson-Gamma).
-        LL ≈ Σ [y / ((1-p) μ^(1-p)) - μ^(2-p) / ((2-p) φ)]
+        Full density from Dunn & Smyth (2005) including Wright function W:
 
-        Note: Exact Tweedie loglik is complex; this is a standard approximation.
+            For y_i > 0:
+              ℓ_i = y_i·μ_i^{1−p}/((1−p)·φ) − μ_i^{2−p}/((2−p)·φ) + log W(y_i, φ, p)
+
+            For y_i = 0:
+              ℓ_i =                           − μ_i^{2−p}/((2−p)·φ)
+
+        The Wright function W is the normalising constant from the compound
+        Poisson-Gamma representation; it depends on y, φ, p but NOT on μ.
+        Including it makes the absolute log-likelihood (and hence AIC) comparable
+        with R's mgcv::gam().
+
+        Gradient: dLL/dμ = (y − μ) / (φ · μ^p)   (unchanged — W is μ-free)
         """
-        p = self.power
-        phi = dispersion
-        
-        # Ensure numerical stability
-        mu = np.maximum(mu, 1e-10)
-        y = np.maximum(y, 1e-10)
-        
-        # Tweedie loglik terms
-        term1 = y / ((1 - p) * mu**(1 - p))
-        term2 = mu**(2 - p) / ((2 - p) * phi)
-        
-        return np.sum(term1 - term2)
+        p   = self.power
+        phi = np.maximum(float(dispersion), 1e-10)
+        mu  = np.maximum(np.asarray(mu,  dtype=np.float64), 1e-10)
+        y   = np.asarray(y, dtype=np.float64)   # do NOT clip zeros
+
+        # Exponential-family kernel: [y·θ(μ) − b(θ(μ))] / φ
+        term1 = y * mu ** (1 - p) / ((1 - p) * phi)   # 0 when y = 0
+        term2 = mu ** (2 - p) / ((2 - p) * phi)
+        kernel = term1 - term2
+
+        # Add Wright function normalising constant for positive observations.
+        # W is constant in μ, so it does not affect PIRLS convergence or the
+        # REML smoothing-parameter gradient — only absolute AIC/BIC values.
+        mask = y > 0
+        if np.any(mask):
+            kernel[mask] += self._tweedie_log_wright(y[mask], phi, p)
+
+        return float(np.sum(kernel))
 
     def summary(self) -> str:
         """Return summary of Tweedie family."""

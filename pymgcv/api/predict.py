@@ -42,7 +42,8 @@ def predict(
     if not model.fitted:
         raise RuntimeError('Model not fitted')
 
-    data = data or model.data
+    if data is None:
+        data = model.data
 
     # Get predictions from model
     if se:
@@ -187,7 +188,8 @@ class Predictor:
         Returns:
             DataFrame with columns: fit, se, lwr, upr.
         """
-        new_data = new_data or self.data
+        if new_data is None:
+            new_data = self.data
 
         # Get predictions and SE
         pred, se_vals = predict(self.model, new_data, scale=scale, se=True)

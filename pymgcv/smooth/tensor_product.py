@@ -200,29 +200,37 @@ class TensorProductSmooth:
         return B
 
     def _build_ti_basis(self, margin_Bs: list[np.ndarray]) -> np.ndarray:
-        """Build tensor-of-contrasts (interaction-only) basis.
+        """Build interaction-only (ti) basis.
 
-        Each margin is column-centered to remove main effects.
-        The tensor product of centered margins gives pure interactions.
+        Builds the full tensor product then projects out all marginal sub-spaces
+        so that only the pure interaction variation remains.  This matches the
+        statistical meaning of mgcv's ti(): the smooth explains variation not
+        captured by any of the individual marginal smooths.
+
+        Steps:
+            1. Compute te() basis: B = row_kron(B1, B2, ...).
+            2. Stack all marginal bases: M = [B1 | B2 | ...].
+            3. Project B orthogonal to column(M):
+               B_ti = (I - Q_M Q_M') B   where  M = Q_M R_M.
 
         Args:
-            margin_Bs: List of marginal basis matrices.
+            margin_Bs: List of marginal basis matrices, each (n, k_i).
 
         Returns:
-            Interaction-only tensor product basis.
+            Interaction-only tensor product basis, shape (n, k1*k2*...).
         """
-        # Center each marginal basis to remove marginal effects
-        centered_Bs = []
-        for B_i in margin_Bs:
-            col_means = B_i.mean(axis=0)
-            B_centered = B_i - col_means[np.newaxis, :]
-            centered_Bs.append(B_centered)
+        # Step 1: full tensor product
+        B_te = margin_Bs[0]
+        for B_j in margin_Bs[1:]:
+            B_te = _row_kron(B_te, B_j)
 
-        # Row-wise Kronecker product of centered bases
-        B = centered_Bs[0]
-        for B_j in centered_Bs[1:]:
-            B = _row_kron(B, B_j)
-        return B
+        # Step 2: stack marginals
+        M = np.hstack(margin_Bs)  # (n, k1 + k2 + ...)
+
+        # Step 3: orthogonal projection – remove the space spanned by M
+        Q_M, _ = np.linalg.qr(M, mode='reduced')
+        B_ti = B_te - Q_M @ (Q_M.T @ B_te)
+        return B_ti
 
     def _build_ti_penalties(self, margin_Ps: list[np.ndarray]) -> list[np.ndarray]:
         """Build penalties for tensor-of-contrasts smooth.

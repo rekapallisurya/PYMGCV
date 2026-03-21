@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=65", "wheel"]
+requires = ["setuptools>=65", "wheel", "numpy>=1.21"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -57,8 +57,8 @@ Repository = "https://github.com/surya/pymgcv"
 Documentation = "https://pymgcv.readthedocs.io"
 Issues = "https://github.com/surya/pymgcv/issues"
 
-[tool.setuptools]
-packages = ["pymgcv"]
+[tool.setuptools.packages.find]
+include = ["pymgcv*"]
 
 [tool.setuptools.package-data]
 pymgcv = ["py.typed"]

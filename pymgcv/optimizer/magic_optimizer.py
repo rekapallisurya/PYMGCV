@@ -100,7 +100,7 @@ class MAGICOptimizer:
 
     def optimize(
         self,
-        max_outer_iter: int = 10,
+        max_outer_iter: int = 200,
         max_inner_iter: int = 25,
         outer_tol: float = 1e-5,
         inner_tol: float = 1e-7,
@@ -185,22 +185,20 @@ class MAGICOptimizer:
             )
             prev_beta = beta.copy()
 
-            # Compute REML objective and derivatives
+            # Compute REML objective and derivatives.
+            # gamma > 1 inflates the log|S^+| penalty term in the REML objective
+            # (Wood 2011, eq. after (6)), encouraging larger lambda and sparser fits.
+            # Only the -gamma*log|S^+| term (and its derivative -gamma*rank_j) changes;
+            # the Hessian comes from the trace term alone and is unaffected by gamma.
             reml_obj = REMLObjective(
                 self.X, self.y, self.family, self.S_list,
                 self.smooth_starts, self.smooth_sizes,
                 offset=self.offset,
                 dispersion=self.dispersion,
+                gamma=gamma,
             )
 
             reml_score, grad_log_lambda, hess_log_lambda = reml_obj.objective_gradient_hessian(beta, self.lambda_log)
-
-            # gamma > 1 inflates the penalty on EDF (sparser fits).  In the REML
-            # gradient, the trace term tr(A^{-1} S_j) * lambda_j represents the
-            # effective DoF contribution; scaling it by gamma matches mgcv behaviour.
-            if gamma != 1.0:
-                grad_log_lambda  = grad_log_lambda  * gamma
-                hess_log_lambda  = hess_log_lambda  * gamma
 
             self.reml_history.append(reml_score)
 
@@ -256,7 +254,8 @@ class MAGICOptimizer:
             if len(d_log_lambda) == 0:
                 self.converged = True
                 break
-            elif np.max(np.abs(alpha * d_log_lambda)) < outer_tol:
+            elif (np.max(np.abs(alpha * d_log_lambda)) < outer_tol and
+                  np.linalg.norm(grad_log_lambda) < 1e-3):
                 self.converged = True
                 if verbose:
                     print(f'Converged after {outer_it + 1} outer iterations')
@@ -277,6 +276,7 @@ class MAGICOptimizer:
             'smooth_lambda': self.lambda_vec,
             'fitted_values': fitted_vals,
             'edf': edf,
+            'dispersion': self.dispersion,
         }
 
     def _optimize_gcv(

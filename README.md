@@ -10,6 +10,7 @@ A complete Python implementation of generalized additive models (GAM) achieving 
 - **Advanced Smoothing**: Thin plate regression splines, cubic splines, tensor products, random effects.
 - **Automatic Variable Selection**: Shrinkage penalties with REML optimization.
 - **GPU Acceleration**: JAX integration for autodiff and GPU computation.
+- **Native Math Engine**: Compiled C kernels plus direct Fortran LAPACK (`dposv`) execution path.
 - **Comprehensive Diagnostics**: Residuals, concurvity, leverage, influence diagnostics.
 - **Rich Visualization**: Smooth effects, 3D tensor surfaces, diagnostic plots.
 
@@ -29,6 +30,18 @@ pip install -e ".[dev]"
 - numpy, scipy, pandas
 - jax, jaxlib (for GPU support, optional)
 - matplotlib, plotly (for visualization)
+
+### Native C/Fortran Notes
+
+- `pymgcv` now includes a compiled C extension: `pymgcv.linalg._native_c`.
+- Linear solves can use low-level LAPACK `dposv` (Fortran) through SciPy wrappers.
+- If a local C compiler is unavailable, installation still succeeds and falls back to NumPy/SciPy.
+- You can inspect backend availability with:
+
+```python
+from pymgcv.linalg import backend_info
+print(backend_info())
+```
 
 ## Usage
 
