@@ -103,6 +103,21 @@ class Family(ABC):
         """
         pass
 
+    def deviance(self, y: np.ndarray, mu: np.ndarray) -> float:
+        """Sum of unit deviances: D(y, μ) = 2 Σ [ℓ(y; y) − ℓ(y; μ)].
+
+        Default implementation uses the loglik method.  Subclasses should
+        override for efficiency or when loglik(y, y) is ill-defined.
+
+        Args:
+            y: Observations, shape (n,).
+            mu: Fitted means, shape (n,).
+
+        Returns:
+            Total deviance (scalar, non-negative).
+        """
+        return float(-2.0 * (self.loglik(y, mu, 1.0) - self.loglik(y, y, 1.0)))
+
 
 class GaussianFamily(Family):
     """Gaussian (normal) family.
@@ -133,6 +148,10 @@ class GaussianFamily(Family):
         residuals = y - mu
         ssr = np.sum(residuals**2)
         return -0.5 * ssr / dispersion
+
+    def deviance(self, y: np.ndarray, mu: np.ndarray) -> float:
+        """Gaussian deviance = RSS."""
+        return float(np.sum((y - mu) ** 2))
 
 
 class PoissonFamily(Family):
@@ -171,6 +190,14 @@ class PoissonFamily(Family):
         """
         # Poisson loglik: y log(mu) - mu (ignoring log(y!) constant)
         return np.sum(y * np.log(mu) - mu)
+
+    def deviance(self, y: np.ndarray, mu: np.ndarray) -> float:
+        """Poisson deviance = 2 Σ [y log(y/μ) − (y − μ)]."""
+        mu = np.maximum(mu, 1e-10)
+        pos = y > 0
+        d = -2.0 * (y - mu)  # contribution from all observations
+        d[pos] += 2.0 * y[pos] * np.log(y[pos] / mu[pos])
+        return float(np.sum(d))
 
 
 class GammaFamily(Family):
@@ -239,11 +266,14 @@ class TweedieFamily(Family):
         power: Power parameter p ∈ (1, 2).
     """
 
-    def __init__(self, power: float = 1.5) -> None:
+    def __init__(self, power: float = 1.5, estimate_power: bool = False) -> None:
         """Initialize Tweedie family.
 
         Args:
             power: Power parameter p. Must be 1 < p < 2 for compound Poisson.
+            estimate_power: If True, estimate p from data during fitting
+                (like R's tw()). The initial value of ``power`` is used as
+                a starting point for the profile-REML search.
 
         Raises:
             ValueError: If power not in valid range (typically 1 < p < 2).
@@ -251,6 +281,12 @@ class TweedieFamily(Family):
         if not (1.0 < power < 2.0):
             raise ValueError(f'Tweedie power must be in (1, 2), got {power}')
         self.power = float(power)
+        self.estimate_power = bool(estimate_power)
+        # Cache for log Wright function: (y_id, phi, p) -> log_W array.
+        # log W depends only on (y, phi, p) and NOT on mu, so it can be
+        # reused across all PIRLS iterations and step-halving attempts.
+        self._wright_cache_key: tuple | None = None
+        self._wright_cache_val: np.ndarray | None = None
 
     def linkinv(self, eta: np.ndarray) -> np.ndarray:
         """Log link: μ = exp(η)."""
@@ -375,11 +411,38 @@ class TweedieFamily(Family):
         # Add Wright function normalising constant for positive observations.
         # W is constant in μ, so it does not affect PIRLS convergence or the
         # REML smoothing-parameter gradient — only absolute AIC/BIC values.
+        # Cache the result: key = (id of y data, len of positive subset, phi, p).
         mask = y > 0
         if np.any(mask):
-            kernel[mask] += self._tweedie_log_wright(y[mask], phi, p)
+            y_pos = y[mask]
+            n_pos = int(np.sum(mask))
+            cache_key = (id(y.base) if y.base is not None else id(y), n_pos, phi, p)
+            if self._wright_cache_key == cache_key and self._wright_cache_val is not None:
+                log_W = self._wright_cache_val
+            else:
+                log_W = self._tweedie_log_wright(y_pos, phi, p)
+                self._wright_cache_key = cache_key
+                self._wright_cache_val = log_W
+            kernel[mask] += log_W
 
         return float(np.sum(kernel))
+
+    def deviance(self, y: np.ndarray, mu: np.ndarray) -> float:
+        """Tweedie deviance = 2 Σ d_i (unit deviance, no Wright function).
+
+        d_i = 2[y(y^{1-p}-μ^{1-p})/(1-p) - (y^{2-p}-μ^{2-p})/(2-p)]
+        For y=0: d_i = 2μ^{2-p}/(2-p)
+        """
+        p = self.power
+        y = np.asarray(y, dtype=np.float64)
+        mu = np.maximum(np.asarray(mu, dtype=np.float64), 1e-10)
+        pos = y > 0
+        y_safe = np.where(pos, y, 1.0)
+        y_1mp = np.where(pos, y_safe ** (1 - p), 0.0)
+        y_2mp = np.where(pos, y_safe ** (2 - p), 0.0)
+        t1 = y * (y_1mp - mu ** (1 - p)) / (1 - p)
+        t2 = (y_2mp - mu ** (2 - p)) / (2 - p)
+        return float(2.0 * np.sum(t1 - t2))
 
     def summary(self) -> str:
         """Return summary of Tweedie family."""

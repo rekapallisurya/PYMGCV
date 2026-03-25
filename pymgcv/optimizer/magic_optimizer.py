@@ -81,15 +81,30 @@ class MAGICOptimizer:
 
         self.n_smooth = len(S_list)
 
-        # Initialize smoothing parameters based on data-penalty ratio
-        # (Wood 2004‐style: balance response variance against penalty size)
+        # Initialize smoothing parameters.
+        # With the mgcv-style identity penalty (TPRS reparameterised), the
+        # scale of S is O(1).
+        #   Gaussian :  λ ≈ σ̂²/n   (noise-per-obs scale; avoids the
+        #               high-λ local trap in the profiled REML)
+        #   Non-Gauss:  λ ≈ ||X'WX|| / ||S_j||  (null-model balance)
+        from pymgcv.distributions.family_base import GaussianFamily as _GF
         self.lambda_log = np.zeros(self.n_smooth)
-        y_var = max(np.var(self.y), 1e-10)
-        for j in range(self.n_smooth):
-            eig_max = np.max(np.abs(np.linalg.eigvalsh(self.S_list[j])))
-            if eig_max > 1e-10:
-                lam_init = y_var / eig_max
-                self.lambda_log[j] = np.log(max(lam_init, 1e-10))
+
+        if isinstance(self.family, _GF):
+            sigma2 = max(np.var(self.y), 1e-10)
+            init_lam = sigma2 / max(len(self.y), 1)
+            self.lambda_log[:] = np.log(max(init_lam, 1e-10))
+        else:
+            eta0 = self.offset.copy()
+            mu0 = self.family.linkinv(eta0)
+            dmu0 = self.family.dmu_deta(eta0)
+            var0 = np.maximum(self.family.variance(mu0, 1.0), 1e-10)
+            w0 = (dmu0 ** 2) / var0
+            XtWX_norm = np.linalg.norm(self.X.T @ (self.X * w0[:, np.newaxis]))
+            for j in range(self.n_smooth):
+                S_norm = np.linalg.norm(self.S_list[j])
+                if S_norm > 1e-10:
+                    self.lambda_log[j] = np.log(max(XtWX_norm / S_norm, 1e-10))
         self.lambda_vec = np.exp(self.lambda_log)
 
         self.reml_history: list[float] = []
@@ -251,8 +266,23 @@ class MAGICOptimizer:
             else:
                 self.lambda_log = np.clip(self.lambda_log + alpha * d_log_lambda, -20, 20)
 
+            # REML-change convergence: if the score barely moved, we're at the optimum.
+            # This handles flat surfaces where the gradient stays numerically non-zero
+            # (common with Tweedie / 88%+ zeros) but the score has fully converged.
+            reml_prev = self.reml_history[-2] if len(self.reml_history) >= 2 else np.inf
+            reml_rel_change = abs(reml_score - reml_prev) / (0.1 + abs(reml_score))
+
+            # Do NOT update φ here.  R's mgcv uses φ=1 throughout PIRLS and
+            # REML λ-selection (the profiled REML concentrates φ out).
+            # φ is estimated once from Pearson residuals after convergence.
+
             if len(d_log_lambda) == 0:
                 self.converged = True
+                break
+            elif reml_rel_change < outer_tol:
+                self.converged = True
+                if verbose:
+                    print(f'Converged (REML flat) after {outer_it + 1} outer iterations')
                 break
             elif (np.max(np.abs(alpha * d_log_lambda)) < outer_tol and
                   np.linalg.norm(grad_log_lambda) < 1e-3):

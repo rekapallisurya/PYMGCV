@@ -35,11 +35,11 @@ def summary(model: GAM, detailed: bool = True) -> str:
     lines = []
 
     # Header
-    lines.append('Family: ' + model.family.__class__.__name__)
-    try:
-        link_name = model.family.link if hasattr(model.family, 'link') else 'unknown'
-    except:
-        link_name = 'unknown'
+    family_cls = model.family.__class__.__name__
+    if hasattr(model.family, 'power'):
+        family_cls += f'(p={model.family.power:.3f})'
+    lines.append('Family: ' + family_cls)
+    link_name = getattr(model.family, 'link', 'log')
     lines.append('Link function: ' + link_name)
     lines.append('')
 
@@ -47,140 +47,158 @@ def summary(model: GAM, detailed: bool = True) -> str:
     lines.append(f'Formula: {model.formula}')
     lines.append('')
 
-    # Parametric coefficients
+    X = model.model_matrix.X
+    y = model.model_matrix.response_vector()
+    n = len(y)
+    phi = getattr(model, 'dispersion_', 1.0)
+    total_edf = getattr(model, 'edf', 1.0) or 1.0
+
+    # ── Posterior precision A = X'WX + S_lambda  (used for both SE and Wald) ─
+    from pymgcv.linalg.penalized_solver import PenalizedSolver
+    offset = model.model_matrix.offset_vector()
+    if offset is None:
+        offset = np.zeros(n)
+    eta = X @ model.beta + offset
+    mu = model.family.linkinv(eta)
+    dmu = model.family.dmu_deta(eta)
+    # Use phi=1 for IRLS weights so that XtWX = X'W₁X (R convention).
+    # Posterior covariance is Vb = phi * inv(X'W₁X + S), matching mgcv's Vp.
+    var_mu = np.maximum(model.family.variance(mu, 1.0), 1e-10)
+    w = np.clip(dmu ** 2 / var_mu, 1e-12, 1e8)
+    XtWX = X.T @ (X * w[:, np.newaxis])
+    S_combined = getattr(model, '_S_combined', np.zeros_like(XtWX))
+    A = XtWX + S_combined                        # posterior precision (up to phi)
+    try:
+        from scipy import linalg as _la
+        Ainv = _la.inv(A)                        # p×p; small since p≈design dim
+    except Exception:
+        Ainv = np.linalg.pinv(A)
+    try:
+        solver_vb = PenalizedSolver(XtWX, S_combined)
+        se_all = np.sqrt(np.maximum(solver_vb.inv_diagonal() * phi, 0.0))
+    except Exception:
+        se_all = np.sqrt(np.maximum(np.diag(Ainv) * phi, 0.0))
+
+    # ── Parametric coefficients ───────────────────────────────────────────────
     lines.append('Parametric coefficients:')
     lines.append('-' * 70)
-    lines.append(f'{"":25s} {"Estimate":>12s} {"Std. Err":>12s} {"t value":>10s} {"Pr(>|t|)":>10s}')
+    lines.append(f'{"":30s} {"Estimate":>12s} {"Std. Err":>10s} {"t value":>10s} {"Pr(>|t|)":>10s}')
     lines.append('-' * 70)
 
-    # Compute standard errors and p-values
-    try:
-        X = model.model_matrix.X
-        y = model.model_matrix.response_vector()
-        
-        # Compute residual standard error
-        fitted_mean = model.family.linkinv(X @ model.beta)
-        residuals = y - fitted_mean
-        
-        # Estimate error variance
-        n = len(y)
-        p = len(model.beta)
-        sigma2 = np.sum(residuals ** 2) / max(1, n - p)
-        
-        # Standard errors from Fisher information matrix
-        try:
-            # For GLM: Var(β) ≈ σ² (X'X)^(-1)
-            XtX = X.T @ X
-            # Add small regularization to avoid singularity
-            XtX_reg = XtX + 1e-8 * np.eye(XtX.shape[0])
-            se = np.sqrt(sigma2 * np.diag(np.linalg.inv(XtX_reg)))
-        except:
-            se = np.ones_like(model.beta) * np.sqrt(sigma2)
-        
-        # Print parametric coefficients
-        n_params = min(len(model.beta), 8)  # Show up to 8 coefficients
-        for i in range(n_params):
-            coef = model.beta[i]
-            si = se[i] if i < len(se) else np.nan
-            
-            if np.isfinite(si) and si > 0:
-                t_val = coef / si
-                p_val = 2 * (1 - stats.t.cdf(abs(t_val), max(1, n - p)))
-                stars = '***' if p_val < 0.001 else ('**' if p_val < 0.01 else ('*' if p_val < 0.05 else ''))
-            else:
-                t_val = 0
-                p_val = 1.0
-                stars = ''
-            
-            param_name = f'Param_{i}' if i > 0 else 'Intercept'
-            lines.append(
-                f'{param_name:25s} {coef:12.6f} {si:12.6f} {t_val:10.4f} {p_val:10.6f} {stars:>3s}'
-            )
-    except Exception as e:
-        # Fallback: just print coefficients
-        for i, coef in enumerate(model.beta[:min(8, len(model.beta))]):
-            param_name = f'Param_{i}' if i > 0 else 'Intercept'
-            lines.append(f'{param_name:25s} {coef:12.6f}')
+    pi = model.model_matrix.param_indices          # slice(0, n_param)
+    param_slice = pi if pi is not None else slice(0, 1)
+    col_names_all = model.model_matrix.column_names
+    param_names = col_names_all[param_slice]  # list slice works for list
+    beta_param = model.beta[param_slice]
+    se_param = se_all[param_slice]
+    dof_resid = max(n - total_edf, 1.0)
 
+    for nm, coef, se in zip(param_names, beta_param, se_param):
+        if se > 1e-12:
+            t_val = coef / se
+            p_val = float(2 * stats.t.sf(abs(t_val), df=dof_resid))
+        else:
+            t_val, p_val = 0.0, 1.0
+        stars = ('***' if p_val < 0.001 else '**' if p_val < 0.01
+                 else '*' if p_val < 0.05 else '.' if p_val < 0.1 else '')
+        lines.append(
+            f'{nm:30s} {coef:12.6f} {se:10.6f} {t_val:10.4f} {p_val:10.6f} {stars}'
+        )
     lines.append('-' * 70)
     lines.append('')
 
-    # Smooth term summary
-    if detailed and hasattr(model, 'smoothing_parameters'):
+    # ── Smooth term significance (Wood 2013 Wald test) ────────────────────────
+    if detailed and model.edf_per_smooth:
         lines.append('Approximate significance of smooth terms:')
         lines.append('-' * 70)
-        lines.append(f'{"":20s} {"edf":>8s} {"Ref.df":>8s} {"F":>10s} {"p-value":>10s}')
+        lines.append(f'{"":30s} {"edf":>7s} {"Ref.df":>8s} {"F":>10s} {"p-value":>10s}')
         lines.append('-' * 70)
 
-        # Compute F-statistics for smooth terms
-        try:
-            if hasattr(model, 'edf_per_smooth') and model.edf_per_smooth:
-                i = 0
-                for smooth_name, edf_dict in model.edf_per_smooth.items():
-                    if isinstance(edf_dict, dict):
-                        edf_val = edf_dict.get('edf', 1.0)
-                    else:
-                        edf_val = float(edf_dict)
-                    
-                    # Use approximate F-statistic based on deviance reduction
-                    # (simplified: would need actual nested model deviance)
-                    f_val = max(1.0, np.random.uniform(0.5, 2.5))  # Placeholder
-                    
-                    degrees_freedom = max(1, 10 - edf_val)
-                    p_val = 1 - stats.f.cdf(f_val, edf_val, degrees_freedom)
-                    
-                    lines.append(f'{smooth_name:20s} {edf_val:8.3f} {degrees_freedom:8.1f} {f_val:10.4f} {p_val:10.6f}')
-                    i += 1
-        except Exception as e:
-            lines.append(f'(smooth term significance computation error: {str(e)[:30]})')
+        mm = model.model_matrix
+        smooth_slices = list(mm.smooth_indices)
+        smooth_label_list = list(model.edf_per_smooth.keys())
+
+        for idx, label in enumerate(smooth_label_list):
+            edf_info = model.edf_per_smooth[label]
+            edf_val = edf_info['edf'] if isinstance(edf_info, dict) else float(edf_info)
+
+            if idx < len(smooth_slices):
+                sl = smooth_slices[idx]
+                beta_j = model.beta[sl]
+                Vb_j = Ainv[sl, sl] * phi        # block of full posterior cov
+                try:
+                    # Wald: T = beta_j' Vb_j^{-1} beta_j
+                    T_j = float(beta_j @ np.linalg.solve(Vb_j, beta_j))
+                except np.linalg.LinAlgError:
+                    T_j = float(beta_j @ np.linalg.lstsq(Vb_j, beta_j, rcond=None)[0])
+                F_j = T_j / max(edf_val, 1e-6)
+                ref_df = round(edf_val + 0.01, 3)
+                p_val = float(stats.f.sf(F_j, edf_val, dof_resid))
+            else:
+                F_j, ref_df, p_val = np.nan, edf_val, 1.0
+
+            stars = ('***' if p_val < 0.001 else '**' if p_val < 0.01
+                     else '*' if p_val < 0.05 else '.' if p_val < 0.1 else '')
+            lines.append(
+                f'{label:30s} {edf_val:7.3f} {ref_df:8.3f} {F_j:10.4f} {p_val:10.6f} {stars}'
+            )
 
         lines.append('-' * 70)
         lines.append('')
 
-    # Model statistics
+    # ── Model statistics ──────────────────────────────────────────────────────
     lines.append('Model statistics:')
     lines.append('-' * 70)
+    if total_edf:
+        lines.append(f'Effective degrees of freedom: {total_edf:.2f}')
+
     try:
-        X = model.model_matrix.X
-        y = model.model_matrix.response_vector()
-        n = len(y)
-        p = len(model.beta)
-        
-        if hasattr(model, 'edf') and model.edf is not None:
-            lines.append(f'Effective degrees of freedom: {model.edf:.2f}')
-        
-        if hasattr(model, 'smoothing_parameters') and len(model.smoothing_parameters or []) > 0:
-            lines.append(f'Number of smooth terms: {len(model.smoothing_parameters)}')
-        
-        lines.append(f'Total parametric degrees of freedom: {p}')
-        
-        # Compute and display deviance
-        try:
-            fitted_mean = model.family.linkinv(X @ model.beta)
-            deviance = -2 * model.family.loglik(y, fitted_mean, dispersion=1.0)
-            lines.append(f'Deviance: {deviance:.6f}')
-            
-            # Null deviance (intercept-only model)
-            intercept_only_mean = np.mean(y) * np.ones_like(y)
-            null_dev = -2 * model.family.loglik(y, intercept_only_mean, dispersion=1.0)
-            dev_explained = (null_dev - deviance) / null_dev * 100 if null_dev > 0 else 0
-            lines.append(f'Deviance explained: {dev_explained:.2f}%')
-            
-            # AIC
-            aic = deviance + 2 * p
-            lines.append(f'AIC: {aic:.6f}')
-        except:
-            pass
-        
-        lines.append('-' * 70)
-    except:
+        fitted_mu = model.family.linkinv(X @ model.beta + offset)
+        # Compute deviance using the unit deviance formula for each family.
+        # For Tweedie we use the exact unit deviance (no Wright function, no phi):
+        #   y>0: D_i = 2*[y*(y^{1-p}-μ^{1-p})/(1-p) - (y^{2-p}-μ^{2-p})/(2-p)]
+        #   y=0: D_i = 2*μ^{2-p}/(2-p)
+        # For other families we use -2*(loglik_fit - loglik_null) directly
+        # (Wright-function terms cancel since both use the same y).
+        from pymgcv.distributions.family_base import TweedieFamily as _TwFamS
+        mu_null = np.full(n, float(np.maximum(y.mean(), 1e-10)))
+        if isinstance(model.family, _TwFamS):
+            _p = model.family.power
+            def _tw_unit_dev(y_v: np.ndarray, mu_v: np.ndarray) -> float:
+                """Tweedie deviance without Wright function or phi."""
+                y_v  = np.asarray(y_v,  dtype=np.float64)
+                mu_v = np.maximum(np.asarray(mu_v, dtype=np.float64), 1e-10)
+                pos  = y_v > 0
+                # Use max(y, 1) before raising to negative power to avoid 0**neg;
+                # the np.where mask ensures the value is replaced by 0.0 anyway.
+                y_safe = np.where(pos, y_v, 1.0)
+                y_1mp = np.where(pos, y_safe ** (1 - _p), 0.0)
+                y_2mp = np.where(pos, y_safe ** (2 - _p), 0.0)
+                t1 = y_v * (y_1mp - mu_v ** (1 - _p)) / (1 - _p)
+                t2 = (y_2mp - mu_v ** (2 - _p)) / (2 - _p)
+                return float(2.0 * np.sum(t1 - t2))
+            deviance = _tw_unit_dev(y, fitted_mu)
+            null_dev = _tw_unit_dev(y, mu_null)
+        else:
+            # For Gaussian/Poisson/Gamma: use kernel difference (Wright terms absent).
+            deviance = float(-2.0 * model.family.loglik(y, fitted_mu,  dispersion=1.0))
+            null_dev = float(-2.0 * model.family.loglik(y, mu_null,    dispersion=1.0))
+        dev_expl = (null_dev - deviance) / abs(null_dev) * 100 if null_dev != 0 else 0.0
+        lines.append(f'Deviance explained: {dev_expl:.2f}%')
+        aic_val = deviance + 2.0 * total_edf
+        lines.append(f'AIC: {aic_val:.4f}')
+        lines.append(f'Scale est. (dispersion phi): {phi:.6f}')
+        lines.append(f'n: {n}')
+    except Exception:
         pass
-    
+
+    lines.append('-' * 70)
     lines.append('')
     lines.append("Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1")
     lines.append('')
-    
+
     return '\n'.join(lines)
+
 
 
 class ModelSummary:

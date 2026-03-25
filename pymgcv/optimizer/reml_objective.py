@@ -156,12 +156,13 @@ class REMLObjective:
             rss_p = deviance + penalty  # = ||y - Xb||^2 + b'Sb for Gaussian
             reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
         else:
-            # Pseudo-Gaussian profiled REML (consistent with objective_gradient_hessian).
-            # rss_pseudo = (working residuals)'W(working residuals) + β'Sβ
-            # This is the PIRLS pseudo-Gaussian quantity; phi enters only through W.
-            z_resid = (self.y - mu) / np.maximum(dmu_deta, 1e-10)
-            rss_p = float(np.sum(w * z_resid ** 2)) + penalty
-            reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
+            # Working-model profiled REML (matches R mgcv).
+            # R evaluates the Gaussian REML on the PIRLS pseudodata where the
+            # "RSS" is the Pearson chi-squared: Σ (y-μ)² / V(μ).  For
+            # non-canonical links this differs from the deviance.
+            pearson = float(np.sum((self.y - mu) ** 2 / var_mu))
+            D_p = pearson + penalty
+            reml = n_eff * np.log(max(D_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
 
         return reml
 
@@ -213,9 +214,9 @@ class REMLObjective:
                 deviance = -2.0 * self.family.loglik(self.y, mu, self.dispersion)
                 rss_p = deviance + penalty
             else:
-                # Pseudo-Gaussian rss
-                z_resid = (self.y - mu) / np.maximum(dmu_deta, 1e-10)
-                rss_p = float(np.sum(w * z_resid ** 2)) + penalty
+                # Working-model RSS = Pearson chi-squared (matches R mgcv)
+                pearson = float(np.sum((self.y - mu) ** 2 / var_mu))
+                rss_p = pearson + penalty
 
             grad = np.zeros(self.n_smooth)
             for j, S_j in enumerate(self.S_list):
@@ -326,18 +327,9 @@ class REMLObjective:
             rss_p = deviance + penalty
             reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
         else:
-            # Pseudo-Gaussian (PIRLS) profiled REML — same structure as Gaussian but
-            # evaluated on pseudo-Gaussian working quantities.  This is how mgcv
-            # selects λ for GLMs: PIRLS converts the GLM into a pseudo-Gaussian
-            # problem, and the Gaussian profiled REML is maximised on that problem.
-            #
-            # rss_pseudo = (working residuals)' W (working residuals) + β' Sλ β
-            #            ≈ Pearson_SS / φ  +  penalty
-            # The n_eff scaling in the loglik term means φ appears only implicitly
-            # through the working weights W, so no double-division issue arises.
-            z_resid = (self.y - mu) / np.maximum(dmu_deta, 1e-10)  # working residuals
-            rss_working = float(np.sum(w * z_resid ** 2))
-            rss_p = rss_working + penalty
+            # Working-model RSS = Pearson chi-squared (matches R mgcv).
+            pearson = float(np.sum((self.y - mu) ** 2 / var_mu))
+            rss_p = pearson + penalty
             reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
 
         if not np.isfinite(reml):
@@ -353,20 +345,25 @@ class REMLObjective:
         grad = np.zeros(self.n_smooth)
         H = np.zeros((self.n_smooth, self.n_smooth))
         bSb_arr = np.array([float(beta @ self.S_list[j] @ beta) for j in range(self.n_smooth)])
-        fit_terms = lambda_vec * n_eff * bSb_arr / max(rss_p, 1e-300)
+
+        if is_gaussian:
+            # Gaussian profiled REML: fit_terms = n_eff·λ·bSb / rss_p
+            rss_p_val = max(rss_p, 1e-300)
+            fit_terms = lambda_vec * n_eff * bSb_arr / rss_p_val
+        else:
+            # Deviance-based profiled REML: same formula as Gaussian
+            rss_p_val = max(rss_p, 1e-300)
+            fit_terms = lambda_vec * n_eff * bSb_arr / rss_p_val
 
         for j in range(self.n_smooth):
             trace_term = lambda_vec[j] * float(np.trace(AinvS[j]))
-            # Both Gaussian and pseudo-Gaussian (non-Gaussian PIRLS) use the same
-            # gradient formula: n_eff * λ_j * bSb / rss_pseudo + trace - γ * rank
             grad[j] = fit_terms[j] + trace_term - self.gamma * ranks[j]
 
             for k in range(j, self.n_smooth):
                 # logdet Hessian (positive definite)
                 h_jk = lambda_vec[j] * lambda_vec[k] * float(np.trace(AinvS[j] @ AinvS[k]))
-                # Fit-term Hessian correction (negative semi-definite, from d²(n_eff·log rss)/dρ_j dρ_k)
-                # = -n_eff * (λ_j bSb_j)(λ_k bSb_k) / rss_p²  (at fixed β, envelope theorem)
-                h_jk -= fit_terms[j] * fit_terms[k] / max(n_eff * rss_p, 1e-300)
+                # Fit-term Hessian correction (negative semi-definite)
+                h_jk -= fit_terms[j] * fit_terms[k] / max(n_eff * rss_p_val, 1e-300)
                 H[j, k] = h_jk
                 H[k, j] = h_jk
 

@@ -210,17 +210,21 @@ class ThinPlateSpline:
         D_k = eigvals[:n_keep]
         U_k = eigvecs[:, :n_keep]
 
-        # 5a. Prediction transform: E_kk^{-1} @ Z @ U_k so that
-        #     B_range = E @ F_pred gives consistent results for both
-        #     training and new data points.
-        F_pred = np.linalg.lstsq(E, Z @ U_k, rcond=None)[0]  # (nk, n_keep)
+        # 5a. Penalty-absorbing reparameterization (mgcv default).
+        # Divide range eigenvectors by sqrt(|eigenvalue|) so the penalty
+        # becomes identity — all wiggly components penalised equally.
+        D_abs_safe = np.maximum(np.abs(D_k), 1e-10)
+        reparam_scale = 1.0 / np.sqrt(D_abs_safe)
+        U_k_reparam = U_k * reparam_scale[np.newaxis, :]
 
-        # 5b. Build basis evaluated at all n data points
+        # 5b. Prediction transform (with reparameterised eigenvectors)
+        F_pred = np.linalg.lstsq(E, Z @ U_k_reparam, rcond=None)[0]
+
+        # 5c. Build basis evaluated at all n data points
         if nk == self.n:
             B_null = T.copy()
-            B_range = E @ F_pred  # = Z @ U_k (consistent with prediction)
+            B_range = E @ F_pred  # = Z @ U_k_reparam
         else:
-            # Evaluate kernel at (all data x knots)
             dists_xk = spatial.distance.cdist(
                 self.X, self.knots, "euclidean"
             )
@@ -231,40 +235,35 @@ class ThinPlateSpline:
 
         self.B = np.column_stack([B_null, B_range])
 
-        # 5c. Penalty matrix: block-diag(0_M, diag(|D_k|))
+        # 5d. Penalty: identity on range, zero on null (after reparam)
         self.S = np.zeros((k, k))
-        self.S[M:, M:] = np.diag(np.abs(D_k))
+        self.S[M:, M:] = np.eye(n_keep)
 
-        # 6. Apply identifiability constraint (mgcv default: sum-to-zero)
-        # Constraint: sum(f(x_i)) = 0, i.e. 1' B beta = 0
-        # This removes one column from B and adjusts S accordingly.
+        # 6. QR constraint absorption (mgcv's absorb.cons)
         self._apply_sum_to_zero_constraint()
 
         # Store internals for prediction
         self._T_knots = T
-        self._F_k = F_pred  # kernel-space coefficients for prediction
+        self._F_k = F_pred
         self._D_k = D_k
         self._U_k = U_k
         self._Z = Z
 
     def _apply_sum_to_zero_constraint(self) -> None:
-        """Apply identifiability constraint for use with a model intercept.
+        """Absorb sum-to-zero constraint via QR (mgcv's absorb.cons).
 
-        The raw basis B = [T | F_k] where T = [1, x1, ..., xd].
-        Since the model adds its own intercept, we:
-          1. Drop the constant column (column 0 of T) from B.
-          2. Center the remaining columns so the smooth is mean-zero.
-
-        The penalty S is adjusted to remove the corresponding row/column.
+        The constraint 1'B\u03b2 = 0 (mean of smooth is zero) is absorbed
+        into the basis by rotating the parameter space so the constrained
+        direction is dropped.  Both B and S are transformed.
         """
-        # Drop the constant column (first column of B is all-ones from T)
-        self.B = self.B[:, 1:]
-        self.S = self.S[1:, 1:]
+        C = self.B.mean(axis=0).reshape(-1, 1)       # (k, 1)
+        Q_con, _ = linalg.qr(C, mode='full')         # Q: (k, k)
+        Z_con = Q_con[:, 1:]                          # (k, k-1)
 
-        # Center remaining columns for identifiability
-        col_means = self.B.mean(axis=0)
-        self.B = self.B - col_means[np.newaxis, :]
-        self._col_means = col_means
+        self.B = self.B @ Z_con
+        self.S = Z_con.T @ self.S @ Z_con
+        self._constraint_Z = Z_con                    # store for predict
+        self._col_means = None                        # not used with QR
         self.k = self.B.shape[1]
 
     # ------------------------------------------------------------------
@@ -325,11 +324,8 @@ class ThinPlateSpline:
         B_range_new = E_new @ self._F_k
         B_raw = np.column_stack([T_new, B_range_new])
 
-        # Apply same constraint as training: drop constant col + center
-        B_trimmed = B_raw[:, 1:]  # drop constant column
-        if hasattr(self, '_col_means') and self._col_means is not None:
-            return B_trimmed - self._col_means[np.newaxis, :]
-        return B_trimmed
+        # Apply same QR constraint rotation as training
+        return B_raw @ self._constraint_Z
 
     # Legacy alias
     predict = predict_basis

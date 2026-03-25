@@ -19,10 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
-from pymgcv.api.gam import GAM
-from pymgcv.api.model_comparison import aic
-from pymgcv.api.plot import plot_smooth, plot_residuals
+import openpyxl
+from pymgcv import GAM, aic, plot_smooth, plot_residuals
 
 try:
     import matplotlib.pyplot as plt

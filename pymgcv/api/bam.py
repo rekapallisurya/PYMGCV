@@ -118,7 +118,11 @@ class BAM(GAM):
             'negative.binomial': NegativeBinomialFamily(theta=1.0),
             'inverse.gaussian': InverseGaussianFamily(),
         }
-        self.family = family_map.get(self.family_name, GaussianFamily())
+        from pymgcv.distributions.family_base import Family as _Family
+        if isinstance(self.family_name, _Family):
+            self.family = self.family_name
+        else:
+            self.family = family_map.get(self.family_name, GaussianFamily())
 
         p_total = X.shape[1]
         n = len(y)

@@ -176,7 +176,11 @@ class GAM:
             'betar': BetaFamily(),
             'gaulss': GaulssFamily(),
         }
-        self.family = family_map.get(self.family_name.lower(), GaussianFamily())
+        from pymgcv.distributions.family_base import Family as _Family
+        if isinstance(self.family_name, _Family):
+            self.family = self.family_name
+        else:
+            self.family = family_map.get(self.family_name.lower(), GaussianFamily())
 
         # 5. Build penalty matrices
         # For tensor product smooths, each smooth contributes multiple penalties.
@@ -315,82 +319,137 @@ class GAM:
                 S_combined += lam * S_j_full
         self._S_combined = S_combined
 
-        # 7a. For non-Gaussian families: a second optimizer pass at the estimated φ
-        #     refines λ for the actual dispersion scale.  The first pass runs at φ=1
-        #     (pseudo-Gaussian REML), giving a coarse φ estimate.  The second pass
-        #     re-selects λ with rss_pseudo ≈ n_eff, which is the right balance point.
-        #
-        #     The γ cap (≤ 1.0) also applies here: for γ > 1 the pseudo-Gaussian
-        #     criterion diverges to −∞ as λ → ∞, so all λ values pile at the clip
-        #     limit and EDF collapses to 1 per smooth.  At γ = 1 the criterion is
-        #     bounded and the Newton optimiser converges to a finite minimum.
+        # 7a. No second optimizer pass needed: the pass-1 REML at φ=1 is the
+        #     correct phi-profiled formulation (Wood 2011).  R's mgcv uses
+        #     V(mu) without phi in PIRLS weights and profiles phi out of REML
+        #     analytically.  A second pass at estimated phi would bake phi into
+        #     the IRLS weights, distorting the penalty balance (Sλ → φSλ).
         from pymgcv.distributions.family_base import GaussianFamily as _GF, PoissonFamily as _PF
-        _needs_phi_refit = not isinstance(self.family, (_GF, _PF)) and self.sp is None
-        phi_refit = 1.0
-        if _needs_phi_refit:
-            # Estimate φ from first-pass residuals
-            _eta_p1 = X @ self.beta + (offset if offset is not None else 0.0)
-            _mu_p1 = self.family.linkinv(_eta_p1)
-            _var_unit_p1 = np.maximum(self.family.variance(_mu_p1, 1.0), 1e-10)
-            _pearson_p1 = float(np.sum((y - _mu_p1) ** 2 / _var_unit_p1))
-            _edf_p1 = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0).total_edf()
-            phi_refit = max(_pearson_p1 / max(len(y) - _edf_p1, 1.0), 1e-6)
 
-            # Second optimizer pass at estimated φ, warm-started from first pass
-            _lam_floor = np.log(max(phi_refit, 1.0) / max(len(y), 1.0))
-            warm_log = np.maximum(np.log(np.maximum(self.smoothing_parameters, 1e-10)), _lam_floor)
-            opt2 = MAGICOptimizer(
+        # 7c. Tweedie power estimation — mirrors R's tw() profile-REML approach.
+        #     If estimate_power=True we search over p ∈ (1,2) for the p that
+        #     minimises the REML score at convergence, updating φ and λ self-
+        #     consistently.  3 outer EM steps are usually enough.
+        from pymgcv.distributions.family_base import TweedieFamily as _TwFam
+        if (isinstance(self.family, _TwFam) and
+                getattr(self.family, 'estimate_power', False) and
+                self.sp is None):
+            from scipy import optimize as _spopt
+
+            def _profile_reml_at_p(p_val: float) -> float:
+                """Full Tweedie REML at fixed p for power comparison.
+
+                Uses deviance-based profiled REML for λ selection (inner), then
+                evaluates the full Laplace-approximate REML including the
+                Tweedie normalizing constant (Wright function) for comparison
+                across p values — the normalizing constant is what distinguishes
+                different p in the marginal likelihood.
+                """
+                p_val = float(np.clip(p_val, 1.01, 1.99))
+                fam_p = _TwFam(power=p_val)
+
+                opt1 = MAGICOptimizer(
+                    X=X, y=y, family=fam_p, S_list=S_list,
+                    smooth_starts=smooth_starts, smooth_sizes=smooth_sizes,
+                    offset=offset, dispersion=1.0,
+                )
+                opt1.lambda_log = np.log(np.maximum(self.smoothing_parameters, 1e-10)).copy()
+                opt1.lambda_vec = self.smoothing_parameters.copy()
+                r1 = opt1.optimize(
+                    max_outer_iter=10,
+                    max_inner_iter=ctrl_inner,
+                    outer_tol=ctrl_tol,
+                    verbose=False,
+                    method=self.method.lower(),
+                    gamma=min(float(self.gamma), 1.0),
+                )
+
+                beta_p = r1['coef']
+                lam_p = opt1.lambda_vec
+                eta_p = X @ beta_p
+                if offset is not None:
+                    eta_p = eta_p + offset
+                mu_p = fam_p.linkinv(eta_p)
+
+                # φ̂ from Pearson residuals
+                var1 = np.maximum(fam_p.variance(mu_p, 1.0), 1e-10)
+                pearson = float(np.sum((y - mu_p) ** 2 / var1))
+                edf_p = r1['edf']
+                phi_est = max(pearson / max(len(y) - edf_p, 1.0), 1e-6)
+
+                # Full Tweedie log-likelihood (includes Wright function)
+                ll_full = fam_p.loglik(y, mu_p, phi_est)
+
+                # Penalised Hessian log-determinant: log|X'WX + S_λ|
+                S_lam = sum(l * S for l, S in zip(lam_p, S_list))
+                dmu = fam_p.dmu_deta(eta_p)
+                w = (dmu ** 2) / var1
+                XtWX = X.T @ (X * w[:, np.newaxis])
+                A = XtWX + S_lam + 1e-7 * np.eye(X.shape[1])
+                sign, logdet_A = np.linalg.slogdet(A)
+                logdet_A = logdet_A if sign > 0 else 1e15
+                p_dim = X.shape[1]
+
+                # log|S+|
+                from pymgcv.optimizer.reml_objective import REMLObjective
+                reml_obj = REMLObjective(
+                    X, y, fam_p, S_list,
+                    smooth_starts=smooth_starts,
+                    smooth_sizes=smooth_sizes,
+                    offset=offset, dispersion=1.0,
+                )
+                log_S_plus = reml_obj._penalty_log_determinant(lam_p)
+                penalty = float(beta_p @ S_lam @ beta_p)
+
+                # Full Laplace REML:
+                #   -2ℓ(β̂,φ̂;p) + β̂'Sβ̂/φ̂ + log|X'WX+S| - p·log(φ̂) - log|S+|
+                reml_full = (-2.0 * ll_full + penalty / phi_est
+                             + logdet_A - p_dim * np.log(phi_est)
+                             - log_S_plus)
+                return float(reml_full) if np.isfinite(reml_full) else 1e30
+
+            p_result = _spopt.minimize_scalar(
+                _profile_reml_at_p,
+                bounds=(1.01, 1.99),
+                method='bounded',
+                options={'xatol': 1e-4},
+            )
+            best_p = float(np.clip(p_result.x, 1.01, 1.99))
+            if verbose:
+                print(f'  Tweedie power estimated: p = {best_p:.4f}')
+
+            # Refit at optimal p (phi=1: profiled out of REML)
+            self.family = _TwFam(power=best_p)
+            self.family.estimate_power = True  # preserve flag on the fitted object
+            opt_p_final = MAGICOptimizer(
                 X=X, y=y, family=self.family, S_list=S_list,
                 smooth_starts=smooth_starts, smooth_sizes=smooth_sizes,
-                offset=offset, dispersion=phi_refit,
+                offset=offset, dispersion=1.0,
             )
-            opt2.weights = optimizer.weights
-            opt2.lambda_log = warm_log
-            opt2.lambda_vec = np.exp(warm_log)
-            result2 = opt2.optimize(
+            opt_p_final.weights = optimizer.weights
+            opt_p_final.lambda_log = np.log(np.maximum(self.smoothing_parameters, 1e-10))
+            opt_p_final.lambda_vec = self.smoothing_parameters.copy()
+            result_p = opt_p_final.optimize(
                 max_outer_iter=ctrl_maxit,
                 max_inner_iter=ctrl_inner,
                 outer_tol=ctrl_tol,
-                verbose=ctrl_verbose,
-                use_jax=use_gpu and device_info()['available'],
+                verbose=False,
                 method=self.method.lower(),
                 gamma=min(float(self.gamma), 1.0),
             )
-            self.beta = result2['coef']
-            self.smoothing_parameters = result2['smooth_lambda']
+            self.beta = result_p['coef']
+            self.smoothing_parameters = result_p['smooth_lambda']
 
-            # Rebuild S_combined with refined λ
+            # Rebuild S_combined with p-optimised λ
             S_combined = np.zeros((p_total, p_total))
             for j_pen, S_j_full in enumerate(S_list):
                 if j_pen < len(self.smoothing_parameters):
-                    lam = self.smoothing_parameters[j_pen]
-                    S_combined += lam * S_j_full
+                    S_combined += self.smoothing_parameters[j_pen] * S_j_full
             self._S_combined = S_combined
 
-        # 7b. Compute EDF with two-pass φ/EDF refinement (matches mgcv gam.fit3).
-        #
-        # The REML optimizer iteratively estimates φ alongside λ (see magic_optimizer.py).
-        # For Gaussian and Poisson (φ=1 by definition) use unit dispersion.
-        # For other families, use the optimizer's final φ estimate; then refine via
-        # one additional Pearson step to ensure EDF and φ are mutually consistent.
-        from pymgcv.distributions.family_base import GaussianFamily, PoissonFamily
-        _estimate_phi = not isinstance(self.family, (GaussianFamily, PoissonFamily))
-
-        # Pass 1: EDF at optimizer's estimated φ (or phi_refit for non-Gaussian)
-        phi_from_opt = phi_refit if _needs_phi_refit else float(result.get('dispersion', 1.0))
-        edf_comp_1 = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=phi_from_opt)
-        edf_1 = edf_comp_1.total_edf()
-
-        if _estimate_phi:
-            _eta = X @ self.beta + (offset if offset is not None else 0.0)
-            mu_fit_ = self.family.linkinv(_eta)
-            var_unit_ = np.maximum(self.family.variance(mu_fit_, 1.0), 1e-10)
-            _pearson_ss = float(np.sum((y - mu_fit_) ** 2 / var_unit_))
-            phi_1 = max(_pearson_ss / max(len(y) - edf_1, 1.0), 1e-6)
-            # Pass 2: self-consistent φ/EDF
-            edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=phi_1)
-        else:
-            edf_computer = edf_comp_1
+        # 7b. Compute EDF at φ=1 (matching mgcv: hat matrix uses V(μ) without φ).
+        #     φ is estimated from Pearson residuals in step 8, after EDF is known.
+        edf_computer = EDFComputer(X, S_combined, self.family, self.beta, offset, dispersion=1.0)
 
         self.edf = edf_computer.total_edf()
 
@@ -471,7 +530,7 @@ class GAM:
 
         eta = X @ beta + offset
         mu = family.linkinv(eta)
-        var_mu = family.variance(mu, self.dispersion_)
+        var_mu = family.variance(mu, 1.0)  # phi=1 for Pearson dispersion estimation
         var_mu = np.where(var_mu < 1e-10, 1e-10, var_mu)
 
         pearson_resid_sq = (y - mu) ** 2 / var_mu
