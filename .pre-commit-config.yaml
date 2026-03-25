@@ -1,0 +1,41 @@
+# Pre-commit hooks for pymgcv
+# Install: pre-commit install
+# Run all: pre-commit run --all-files
+
+repos:
+  # -- General file hygiene --------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  # -- Code formatting (Black) -----------------------------------------------
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        args: ["--line-length=100"]
+
+  # -- Linting & import sorting (Ruff) ---------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+
+  # -- Type checking stub validation -----------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [numpy, scipy, pandas-stubs]
+        args: ["--ignore-missing-imports"]
+        pass_filenames: false
+        entry: mypy pymgcv/

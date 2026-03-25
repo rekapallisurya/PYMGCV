@@ -1,0 +1,23 @@
+# Include essential files
+include LICENSE
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+include setup.py
+
+# Include package source (including C extension source)
+recursive-include pymgcv *.py *.pyi *.c *.typed
+
+# Include tests
+recursive-include tests *.py *.csv
+
+# Exclude development & CI artifacts
+prune _archive
+prune htmlcov
+prune docs
+prune examples
+prune .github
+prune __pycache__
+global-exclude *.pyc *.pyo *.egg-info
+global-exclude .DS_Store
+global-exclude *.png *.xlsx

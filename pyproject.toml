@@ -1,26 +1,50 @@
+# ──────────────────────────────────────────────────────────────────────
+# pymgcv — Production-grade GAM package (PEP 517 / 518 compliant)
+# ──────────────────────────────────────────────────────────────────────
+
 [build-system]
-requires = ["setuptools>=65", "wheel", "numpy>=1.21"]
+requires = ["setuptools>=68", "wheel>=0.41", "numpy>=1.21"]
 build-backend = "setuptools.build_meta"
+
+# ── Project metadata ─────────────────────────────────────────────────
 
 [project]
 name = "pymgcv"
 version = "0.1.0"
-description = "Production-grade GAM package with numerical equivalence to R's mgcv (Simon Wood)"
+description = "Production-grade Generalized Additive Models with numerical equivalence to R's mgcv"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Surya", email = "surya@example.com"}
+    {name = "Surya", email = "surya@example.com"},
+]
+maintainers = [
+    {name = "Surya", email = "surya@example.com"},
 ]
 requires-python = ">=3.11"
-keywords = ["GAM", "generalized-additive-models", "statistics", "machine-learning"]
+keywords = [
+    "GAM",
+    "generalized-additive-models",
+    "statistics",
+    "machine-learning",
+    "splines",
+    "regression",
+    "mgcv",
+    "smoothing",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
-    "Topic :: Scientific/Engineering :: Statistics",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -28,6 +52,8 @@ dependencies = [
     "scipy>=1.7",
     "pandas>=1.3",
 ]
+
+# ── Optional dependency groups ───────────────────────────────────────
 
 [project.optional-dependencies]
 gpu = [
@@ -42,43 +68,109 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "black>=23.0",
+    "ruff>=0.4.0",
     "isort>=5.0",
-    "pylint>=2.0",
     "mypy>=1.0",
+    "pre-commit>=3.0",
     "ipython>=8.0",
+    "build>=1.0",
+    "twine>=5.0",
 ]
 docs = [
-    "sphinx>=4.0",
-    "sphinx-rtd-theme>=1.0",
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+    "mkdocs-gen-files>=0.5",
+    "mkdocs-literate-nav>=0.6",
+]
+all = [
+    "pymgcv[gpu,viz,docs,dev]",
 ]
 
+# ── URLs ─────────────────────────────────────────────────────────────
+
 [project.urls]
-Repository = "https://github.com/surya/pymgcv"
+Homepage = "https://github.com/surya/pymgcv"
 Documentation = "https://pymgcv.readthedocs.io"
+Repository = "https://github.com/surya/pymgcv"
 Issues = "https://github.com/surya/pymgcv/issues"
+Changelog = "https://github.com/surya/pymgcv/blob/main/CHANGELOG.md"
+
+# ── Setuptools configuration ────────────────────────────────────────
 
 [tool.setuptools.packages.find]
 include = ["pymgcv*"]
+exclude = ["tests*", "examples*", "docs*", "_archive*"]
 
 [tool.setuptools.package-data]
-pymgcv = ["py.typed"]
+pymgcv = ["py.typed", "linalg/_native_c.c"]
+
+# ── Tool configuration ──────────────────────────────────────────────
 
 [tool.black]
 line-length = 100
-target-version = ['py311']
+target-version = ["py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by black)
+    "B905",   # zip without strict= (perf)
+    "SIM108", # ternary operator
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pymgcv"]
 
 [tool.isort]
 profile = "black"
 line_length = 100
-multi_line_mode = 3
+known_first_party = ["pymgcv"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
-ignore_missing_imports = false
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=pymgcv --cov-report=term-missing --cov-report=html"
+addopts = "-v --tb=short --cov=pymgcv --cov-report=term-missing --cov-report=html"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests requiring GPU/JAX",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["pymgcv"]
+omit = [
+    "pymgcv/linalg/_native_c.c",
+    "pymgcv/visualization/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+]
+show_missing = true
+fail_under = 70
