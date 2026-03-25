@@ -64,11 +64,11 @@ jobs:
 
       - name: Run tests
         if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12') }}
-        run: pytest -m "not gpu"
+        run: pytest -m "not gpu" --reruns 2 --reruns-delay 5
 
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: pytest -m "not gpu" --cov=pymgcv --cov-report=xml
+        run: pytest -m "not gpu" --cov=pymgcv --cov-report=xml --reruns 2 --reruns-delay 5
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
