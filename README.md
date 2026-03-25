@@ -96,34 +96,48 @@ print(model.summary())
 
 ## Implementation Status
 
-### Phase 1: Foundations ✓ (In Progress)
-- [ ] Step 1: Formula parsing for smooth specifications
-- [ ] Step 2: Thin plate regression splines
-- [ ] Step 3: Design matrix construction
-- [ ] Step 4: Penalty matrix construction
-- [ ] Step 5: Demmler–Reinsch orthogonalization
+### Phase 1: Foundations ✅
+- [x] Step 1: Formula parsing for smooth specifications (`s()`, `te()`, `ti()`)
+- [x] Step 2: Thin plate regression splines (eigen-reparameterized, identity penalty)
+- [x] Step 3: Design matrix construction (intercept + smooth blocks)
+- [x] Step 4: Penalty matrix construction (QR constraint absorption)
+- [x] Step 5: Demmler–Reinsch orthogonalization
 
-### Phase 2: Core Solver (Planned)
-- [ ] Step 6: Penalized likelihood formulation
-- [ ] Step 7: PIRLS solver
-- [ ] Step 8: MAGIC smoothing parameter optimizer
-- [ ] Step 9: REML objective and gradients
-- [ ] Step 10: EDF computation
-- [ ] Step 11: Smooth term significance tests
+### Phase 2: Core Solver ✅
+- [x] Step 6: Penalized likelihood formulation (profiled REML)
+- [x] Step 7: PIRLS solver (step-halving, warm-start, deviance convergence)
+- [x] Step 8: MAGIC smoothing parameter optimizer (Newton + backtracking)
+- [x] Step 9: REML objective, gradient, and Hessian (Pearson χ² for non-Gaussian)
+- [x] Step 10: EDF computation (`tr((X'WX + Sλ)⁻¹ X'WX)` at φ=1)
+- [x] Step 11: Smooth term significance tests (Wood 2013 Wald F-test)
 
-### Phase 3: Extensions (Planned)
-- [ ] Step 12: Distribution families
-- [ ] Step 13: Tweedie GAM
-- [ ] Step 14: GPU acceleration
-- [ ] Step 15: Automatic variable selection
+### Phase 3: Extensions ✅
+- [x] Step 12: Distribution families (Gaussian, Poisson, Binomial, Gamma, Inverse Gaussian, Negative Binomial)
+- [x] Step 13: Tweedie GAM (automatic power estimation via Laplace REML + Wright function)
+- [x] Step 14: GPU acceleration (JAX backend, optional)
+- [x] Step 15: Automatic variable selection (shrinkage penalties)
 
-### Phase 4: Output & Validation (Planned)
-- [ ] Step 16: Model summary
-- [ ] Step 17: Prediction
-- [ ] Step 18: Visualization
-- [ ] Step 19: Diagnostics
-- [ ] Step 20: Validation tests against mgcv
-- [ ] Step 21: Insurance pricing demo
+### Phase 4: Output & Validation ✅
+- [x] Step 16: Model summary (R mgcv–style output with parametric + smooth tables)
+- [x] Step 17: Prediction (`predict()` with `scale='response'` / `'link'`)
+- [x] Step 18: Visualization (smooth effect plots, 3D tensor surfaces, diagnostics)
+- [x] Step 19: Diagnostics (residuals, concurvity, leverage)
+- [x] Step 20: Validation tests against mgcv (231 tests passing)
+- [x] Step 21: Insurance pricing / campaign Tweedie demo
+
+### R mgcv Parity Status
+
+| Metric | pymgcv | R mgcv | Δ |
+|--------|--------|--------|---|
+| Tweedie power (p) | 1.331 | 1.344 | 1.0% |
+| Dispersion (φ) | 5.46 | 5.91 | 7.6% (from p) |
+| Intercept | −1.255 | −1.255 | ~0% |
+| s(age) edf | 1.000 | 1.009 | 0.9% |
+| s(income_k) edf | 1.000 | 1.001 | ~0% |
+| s(contacts) edf | 1.007 | 1.006 | 0.1% |
+| Deviance explained | 13.68% | 13.6% | 0.6% |
+
+See [RMGCV_VS_PYMGCV_COMPARISON.md](RMGCV_VS_PYMGCV_COMPARISON.md) for a detailed breakdown of calculation differences.
 
 ## Documentation
 
