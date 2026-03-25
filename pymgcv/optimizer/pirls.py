@@ -20,10 +20,7 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
-from scipy import linalg
 
 
 class PIRLSSolver:
@@ -37,7 +34,7 @@ class PIRLSSolver:
         lambda_vec: Smoothing parameters.
         offset: Offset vector.
         dispersion: Dispersion parameter φ.
-        
+
         beta: Current/final coefficient estimate.
         mu: Current/final predicted mean.
         eta: Current/final linear predictor.
@@ -52,10 +49,10 @@ class PIRLSSolver:
         y: np.ndarray,
         family: object,
         S_list: list[np.ndarray],
-        lambda_vec: Optional[np.ndarray] = None,
-        offset: Optional[np.ndarray] = None,
+        lambda_vec: np.ndarray | None = None,
+        offset: np.ndarray | None = None,
         dispersion: float = 1.0,
-        weights: Optional[np.ndarray] = None,
+        weights: np.ndarray | None = None,
     ) -> None:
         """Initialize PIRLS solver.
 
@@ -100,52 +97,52 @@ class PIRLSSolver:
         # Construct combined penalty
         self.S = self._construct_combined_penalty()
 
-    def _validate_offset(self, offset: Optional[np.ndarray], n: int) -> np.ndarray:
+    def _validate_offset(self, offset: np.ndarray | None, n: int) -> np.ndarray:
         """Validate and handle offset parameter."""
         if offset is None:
             return np.zeros(n)
-        
+
         offset = np.asarray(offset, dtype=np.float64)
-        
+
         if len(offset) != n:
             raise ValueError(f"Offset length {len(offset)} != n={n}")
-        
+
         # Handle infinite offsets
         if not np.all(np.isfinite(offset)):
             offset = np.where(np.isfinite(offset), offset, 0.0)
-        
+
         return offset
 
-    def _validate_weights(self, weights: Optional[np.ndarray], n: int) -> np.ndarray:
+    def _validate_weights(self, weights: np.ndarray | None, n: int) -> np.ndarray:
         """Validate and handle weights parameter."""
         if weights is None:
             return np.ones(n)
-        
+
         weights = np.asarray(weights, dtype=np.float64)
-        
+
         if len(weights) != n:
             raise ValueError(f"Weights length {len(weights)} != n={n}")
-        
+
         # Ensure positive weights
         if np.any(weights <= 0):
             raise ValueError("Weights must be positive")
-        
+
         # Handle infinite weights
         if not np.all(np.isfinite(weights)):
             weights = np.where(np.isfinite(weights), weights, 1.0)
-        
+
         return weights
 
     def _initialize_from_family(self) -> None:
         """Set sensible starting beta/mu/eta using family.initialize()."""
-        if not hasattr(self.family, 'initialize'):
+        if not hasattr(self.family, "initialize"):
             return  # Use defaults (zeros)
 
         mu_init = self.family.initialize(self.y)
         mu_init = np.asarray(mu_init, dtype=np.float64)
         self.mu = mu_init
 
-        if hasattr(self.family, 'linkfun'):
+        if hasattr(self.family, "linkfun"):
             eta_init = self.family.linkfun(mu_init)
         else:
             # Fallback: try family.linkinv inverse numerically (not used)
@@ -168,9 +165,9 @@ class PIRLSSolver:
     def _clip_mu(self) -> None:
         """Clip mu to the valid domain for the current family."""
         family_name = type(self.family).__name__.lower()
-        if 'binomial' in family_name:
+        if "binomial" in family_name:
             self.mu = np.clip(self.mu, 1e-6, 1.0 - 1e-6)
-        elif any(x in family_name for x in ('poisson', 'gamma', 'tweedie', 'negative', 'inverse')):
+        elif any(x in family_name for x in ("poisson", "gamma", "tweedie", "negative", "inverse")):
             self.mu = np.maximum(self.mu, 1e-6)
 
     def _construct_combined_penalty(self) -> np.ndarray:
@@ -185,7 +182,7 @@ class PIRLSSolver:
         max_iter: int = 25,
         tol: float = 1e-7,
         verbose: bool = False,
-        beta_init: Optional[np.ndarray] = None,
+        beta_init: np.ndarray | None = None,
     ) -> np.ndarray:
         """Solve GAM via PIRLS.
 
@@ -216,8 +213,8 @@ class PIRLSSolver:
             self._clip_mu()
 
         dev_old = np.inf
-        last_solver: Optional[PenalizedSolver] = None
-        last_XtWX: Optional[np.ndarray] = None
+        last_solver: PenalizedSolver | None = None
+        last_XtWX: np.ndarray | None = None
 
         for it in range(max_iter):
             # ----------------------------------------------------------
@@ -235,12 +232,12 @@ class PIRLSSolver:
 
             var_mu = np.maximum(var_mu, 1e-10)
             # Safe dmu/deta: avoid division by zero in working response
-            dmu_safe = np.where(np.abs(dmu_deta) < 1e-10,
-                                np.sign(dmu_deta + 1e-30) * 1e-10,
-                                dmu_deta)
+            dmu_safe = np.where(
+                np.abs(dmu_deta) < 1e-10, np.sign(dmu_deta + 1e-30) * 1e-10, dmu_deta
+            )
 
             # IRLS weights (include observation weights)
-            w = self.weights * np.clip((dmu_safe ** 2) / var_mu, 1e-12, 1e8)
+            w = self.weights * np.clip((dmu_safe**2) / var_mu, 1e-12, 1e8)
 
             # Working response z = eta + (y - mu) / dmu_deta
             # Remove offset so the system solves for β only
@@ -259,7 +256,7 @@ class PIRLSSolver:
             if not np.all(np.isfinite(beta_cand)):
                 # Solver failed: stay at current beta and exit
                 if verbose:
-                    print(f'  PIRLS iter {it}: solver returned non-finite beta')
+                    print(f"  PIRLS iter {it}: solver returned non-finite beta")
                 break
 
             # ----------------------------------------------------------
@@ -278,13 +275,11 @@ class PIRLSSolver:
 
             # Track per-iteration history (step_size=1 when no halving happened)
             self.dev_history.append(dev_new)
-            self.history.append({'step_size': 1.0, 'deviance': dev_new,
-                                  'iteration': it})
+            self.history.append({"step_size": 1.0, "deviance": dev_new, "iteration": it})
 
             if verbose:
                 rel = abs(dev_old - dev_new) / (0.1 + abs(dev_new))
-                print(f'  PIRLS iter {it:2d}: pdev={dev_new:.6f}  '
-                      f'Δpdev/pdev={rel:.2e}')
+                print(f"  PIRLS iter {it:2d}: pdev={dev_new:.6f}  " f"Δpdev/pdev={rel:.2e}")
 
             # ----------------------------------------------------------
             # 6. mgcv-style convergence check on penalized deviance
@@ -309,7 +304,7 @@ class PIRLSSolver:
         dmu = self.family.dmu_deta(self.eta)
         vm = np.maximum(self.family.variance(self.mu, self.dispersion), 1e-10)
         dmu_s = np.where(np.abs(dmu) < 1e-10, 1e-10, dmu)
-        w_final = self.weights * np.clip((dmu_s ** 2) / vm, 1e-12, 1e8)
+        w_final = self.weights * np.clip((dmu_s**2) / vm, 1e-12, 1e8)
 
         self.last_XtWX_ = self.X.T @ (self.X * w_final[:, np.newaxis])
         self.last_solver_ = PenalizedSolver(self.last_XtWX_, self.S)
@@ -331,8 +326,10 @@ class PIRLSSolver:
 
         # Penalized deviance at old beta: -2*loglik + beta'S*beta / phi
         # (matches mgcv's pdev criterion; penalty term ensures we accept smoother steps)
-        pdev_curr = (-2.0 * self.family.loglik(self.y, self.mu, self.dispersion)
-                     + float(beta_old @ self.S @ beta_old) / self.dispersion)
+        pdev_curr = (
+            -2.0 * self.family.loglik(self.y, self.mu, self.dispersion)
+            + float(beta_old @ self.S @ beta_old) / self.dispersion
+        )
 
         step = 1.0
         for _ in range(max_halvings):
@@ -356,14 +353,18 @@ class PIRLSSolver:
 
             # Clip mu_try for the deviance evaluation
             family_name = type(self.family).__name__.lower()
-            if 'binomial' in family_name:
+            if "binomial" in family_name:
                 mu_try = np.clip(mu_try, 1e-6, 1.0 - 1e-6)
-            elif any(nm in family_name for nm in ('poisson', 'gamma', 'tweedie', 'negative', 'inverse')):
+            elif any(
+                nm in family_name for nm in ("poisson", "gamma", "tweedie", "negative", "inverse")
+            ):
                 mu_try = np.maximum(mu_try, 1e-6)
 
             # Penalized deviance at beta_try
-            pdev_try = (-2.0 * self.family.loglik(self.y, mu_try, self.dispersion)
-                        + float(beta_try @ self.S @ beta_try) / self.dispersion)
+            pdev_try = (
+                -2.0 * self.family.loglik(self.y, mu_try, self.dispersion)
+                + float(beta_try @ self.S @ beta_try) / self.dispersion
+            )
 
             # Accept if penalized deviance didn't significantly increase
             # (matches mgcv: step.failed when pdev > pdev_old * 1.0000001 + eps)
@@ -401,25 +402,24 @@ class PIRLSSolver:
         """Return linear predictor η = Xβ + offset."""
         return self.X @ self.beta + self.offset
 
-    def residuals(self, type: str = 'deviance') -> np.ndarray:
+    def residuals(self, type: str = "deviance") -> np.ndarray:
         """Compute residuals of type 'deviance', 'pearson', or 'response'."""
         mu = self.fitted_values()
-        if type == 'response':
+        if type == "response":
             return self.y - mu
-        elif type == 'pearson':
+        elif type == "pearson":
             var_mu = self.family.variance(mu, self.dispersion)
             return (self.y - mu) / np.sqrt(np.maximum(var_mu, 1e-10))
-        elif type == 'deviance':
+        elif type == "deviance":
             ll_sat = self.family.loglik(self.y, self.y, self.dispersion)
             ll_fit = self.family.loglik(self.y, mu, self.dispersion)
             return np.sign(self.y - mu) * np.sqrt(np.maximum(2.0 * (ll_sat - ll_fit), 0.0))
         else:
-            raise ValueError(f'Unknown residual type: {type}')
+            raise ValueError(f"Unknown residual type: {type}")
 
     def summary(self) -> str:
         """Brief summary string."""
-        return (f'PIRLSSolver: converged={self.converged}, '
-                f'iterations={self.iterations}')
+        return f"PIRLSSolver: converged={self.converged}, " f"iterations={self.iterations}"
 
 
 def solve_pirls(
@@ -427,16 +427,19 @@ def solve_pirls(
     y: np.ndarray,
     family: object,
     S_list: list[np.ndarray],
-    lambda_vec: Optional[np.ndarray] = None,
-    offset: Optional[np.ndarray] = None,
+    lambda_vec: np.ndarray | None = None,
+    offset: np.ndarray | None = None,
     dispersion: float = 1.0,
-    weights: Optional[np.ndarray] = None,
+    weights: np.ndarray | None = None,
     max_iter: int = 25,
     tol: float = 1e-7,
 ) -> tuple[np.ndarray, bool]:
     """Functional API for PIRLS solver."""
     solver = PIRLSSolver(
-        X, y, family, S_list,
+        X,
+        y,
+        family,
+        S_list,
         lambda_vec=lambda_vec,
         offset=offset,
         dispersion=dispersion,

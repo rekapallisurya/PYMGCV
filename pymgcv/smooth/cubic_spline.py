@@ -24,8 +24,6 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from numpy.polynomial.legendre import leggauss
 
@@ -54,7 +52,7 @@ def _natural_cubic_spline_basis_and_penalty(
         (B, S) where B: (n, k), S: (k, k).
     """
     n = len(x)
-    k = len(knots)          # number of knots = number of basis functions
+    k = len(knots)  # number of knots = number of basis functions
     kappa = np.sort(knots)
 
     # ---- helper: h_{j}(x) ----
@@ -66,9 +64,9 @@ def _natural_cubic_spline_basis_and_penalty(
     #             + (x-κ_{k-1})^3_+ * (κ_k - κ_j)/(κ_k - κ_{k-1})] / (κ_k - κ_{k-1})
     # but the normalisation varies; we use a numerically equivalent form.
 
-    kn   = kappa[-1]
+    kn = kappa[-1]
     knm1 = kappa[-2]
-    h    = kn - knm1
+    h = kn - knm1
 
     def _hplus(x_val, a):
         return np.maximum(x_val - a, 0.0) ** 3
@@ -79,10 +77,10 @@ def _natural_cubic_spline_basis_and_penalty(
         kj = kappa[j]
         A = _hplus(x_val, kj)
         B = _hplus(x_val, knm1) * ((kn - kj) / h)
-        C = _hplus(x_val, kn  ) * ((knm1 - kj + h) / h)  # = (kn - kj - h)/h
+        C = _hplus(x_val, kn) * ((knm1 - kj + h) / h)  # = (kn - kj - h)/h
         # Correct formula (Green & Silverman, p. 12):
         c_j = (kn - kj) / h
-        d_j = (knm1 - kj) / h          # = c_j - 1
+        d_j = (knm1 - kj) / h  # = c_j - 1
         return A - c_j * _hplus(x_val, knm1) + (c_j - 1) * _hplus(x_val, kn)
 
     # Build basis: intercept, linear, then k-2 spline functions
@@ -106,7 +104,7 @@ def _natural_cubic_spline_basis_and_penalty(
     for left, right in zip(all_pts[:-1], all_pts[1:]):
         if right - left < 1e-14:
             continue
-        mid  = 0.5 * (left + right)
+        mid = 0.5 * (left + right)
         half = 0.5 * (right - left)
         xq = mid + half * gl_pts
         wq = half * gl_wts
@@ -114,7 +112,7 @@ def _natural_cubic_spline_basis_and_penalty(
         # Evaluate g_j'' at quadrature points
         G2 = np.zeros((len(xq), k - 2))
         for j in range(k - 2):
-            kj  = kappa[j]
+            kj = kappa[j]
             c_j = (kn - kj) / h
             G2[:, j] = (
                 6.0 * np.maximum(xq - kj, 0.0)
@@ -143,14 +141,14 @@ class CubicRegressionSpline:
         self,
         X: np.ndarray,
         k: int = 10,
-        knot_placement: str = 'quantile',
-        knots: Optional[np.ndarray] = None,
+        knot_placement: str = "quantile",
+        knots: np.ndarray | None = None,
     ) -> None:
         X = np.asarray(X, dtype=float).ravel()
         if len(X) < 3:
-            raise ValueError('Need at least 3 observations')
+            raise ValueError("Need at least 3 observations")
         if k < 4:
-            raise ValueError('k must be >= 4')
+            raise ValueError("k must be >= 4")
 
         self.X = X
         self.n = len(X)
@@ -160,13 +158,15 @@ class CubicRegressionSpline:
             self.knots = np.sort(np.asarray(knots, dtype=float))
             # If custom knots are interior only, add boundary knots
             if len(self.knots) < k:
-                self.knots = np.concatenate([
-                    [X.min()],
-                    self.knots,
-                    [X.max()],
-                ])
+                self.knots = np.concatenate(
+                    [
+                        [X.min()],
+                        self.knots,
+                        [X.max()],
+                    ]
+                )
         else:
-            if knot_placement == 'quantile':
+            if knot_placement == "quantile":
                 qs = np.linspace(0, 1, k)
                 self.knots = np.unique(np.quantile(X, qs))
                 # Ensure we have exactly k knots
@@ -189,8 +189,8 @@ class CubicRegressionSpline:
 
     def summary(self) -> str:
         return (
-            f'CubicRegressionSpline n={self.n} k={self.k} '
-            f'knots=[{self.knots[0]:.4f}, {self.knots[-1]:.4f}]'
+            f"CubicRegressionSpline n={self.n} k={self.k} "
+            f"knots=[{self.knots[0]:.4f}, {self.knots[-1]:.4f}]"
         )
 
 
@@ -232,17 +232,17 @@ class CubicShrinkageSpline:
 # Functional API
 # ---------------------------------------------------------------------------
 
+
 def cubic_basis_matrix(
     X: np.ndarray,
     k: int = 10,
-    knots: Optional[np.ndarray] = None,
+    knots: np.ndarray | None = None,
 ) -> np.ndarray:
     spline = CubicRegressionSpline(X, k=k, knots=knots)
     return spline.B
 
 
-def create_cubic_penalty(k: int, X: Optional[np.ndarray] = None) -> np.ndarray:
+def create_cubic_penalty(k: int, X: np.ndarray | None = None) -> np.ndarray:
     if X is None:
         X = np.linspace(0, 1, max(k * 3, 50))
     return CubicRegressionSpline(X, k=k).S
-

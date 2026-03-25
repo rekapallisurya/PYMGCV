@@ -56,10 +56,10 @@ class PenalizedSolver:
         self.XtWX = XtWX
         self.A = XtWX + S
 
-        self._cho: tuple | None = None         # (L, lower) from cho_factor
+        self._cho: tuple | None = None  # (L, lower) from cho_factor
         self._L_inv: np.ndarray | None = None  # triangular inverse of L
-        self._qr: tuple | None = None          # (Q, R, pivot) from pivoted QR
-        self._svd: tuple | None = None         # (U, s, s_inv, Vt)
+        self._qr: tuple | None = None  # (Q, R, pivot) from pivoted QR
+        self._svd: tuple | None = None  # (U, s, s_inv, Vt)
         self.is_cholesky = False
         self.is_qr = False
         self.ridge = 0.0
@@ -87,7 +87,7 @@ class PenalizedSolver:
 
         # 2. Try with progressively larger adaptive ridge
         for exp in (-12, -10, -8, -6, -4):
-            ridge = diag_mean * (10.0 ** exp)
+            ridge = diag_mean * (10.0**exp)
             A_reg = self.A + ridge * np.eye(p)
             try:
                 cho = linalg.cho_factor(A_reg, lower=True, check_finite=False)
@@ -133,9 +133,7 @@ class PenalizedSolver:
                 self._qr = (Q, R, pivot)
                 self.is_qr = True
                 # Precompute L_inv equivalent (R^{-1} P^T) for inv_diagonal
-                Rinv = linalg.solve_triangular(
-                    R, np.eye(rank), lower=False, check_finite=False
-                )
+                Rinv = linalg.solve_triangular(R, np.eye(rank), lower=False, check_finite=False)
                 # A^{-1} = P R^{-1} Q^T  (symmetric A → Q = Q of A, so A^{-1} ≈ P R^{-1} Q^T)
                 # Store Rinv for inv_diagonal computation
                 self._qr_Rinv = Rinv
@@ -227,15 +225,15 @@ class PenalizedSolver:
         if self._qr is not None:
             # A = Q R P^T  =>  A^{-1} = P R^{-T} Q^T  (A symmetric positive definite)
             # diag(A^{-1})_j = ||col j of (P R^{-1})||^2
-            Rinv = getattr(self, '_qr_Rinv', None)
-            pivot = getattr(self, '_qr_pivot', None)
+            Rinv = getattr(self, "_qr_Rinv", None)
+            pivot = getattr(self, "_qr_pivot", None)
             if Rinv is not None and pivot is not None:
                 PRinv = np.empty_like(Rinv)
                 PRinv[pivot, :] = Rinv
-                return np.sum(PRinv ** 2, axis=1)
+                return np.sum(PRinv**2, axis=1)
         if self._svd is not None:
             _, s, s_inv, Vt = self._svd
-            return (Vt.T ** 2) @ s_inv
+            return (Vt.T**2) @ s_inv
         return np.diag(np.linalg.pinv(self.A))
 
     def edf(self) -> float:
@@ -257,6 +255,7 @@ class PenalizedSolver:
 # ---------------------------------------------------------------------------
 # Legacy functional helpers (backward compatibility)
 # ---------------------------------------------------------------------------
+
 
 def solve_symmetric_definite(A: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Solve symmetric positive definite system Ax = b."""

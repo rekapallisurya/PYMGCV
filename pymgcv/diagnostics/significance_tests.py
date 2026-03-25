@@ -23,8 +23,6 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from scipy import stats
 
@@ -49,7 +47,7 @@ class SmoothTest:
         deviance_full: float,
         deviance_null: float,
         dispersion: float = 1.0,
-        test_type: str = 'F',
+        test_type: str = "F",
     ) -> None:
         """Initialize smooth term test.
 
@@ -79,7 +77,7 @@ class SmoothTest:
         """Compute test statistic and p-value."""
         deviance_diff = self.deviance_null - self.deviance_full
 
-        if self.test_type == 'F':
+        if self.test_type == "F":
             # F-test
             if self.edf > 0 and self.dispersion > 0:
                 self.test_stat = (deviance_diff / self.edf) / self.dispersion
@@ -91,7 +89,7 @@ class SmoothTest:
                 self.test_stat = np.nan
                 self.p_value = 1.0
 
-        elif self.test_type == 'chisq':
+        elif self.test_type == "chisq":
             # Chi-square test
             if self.dispersion > 0:
                 self.test_stat = deviance_diff / self.dispersion
@@ -104,11 +102,11 @@ class SmoothTest:
     def summary(self) -> str:
         """Return summary string."""
         return (
-            f'{self.smooth_name:20s} '
-            f'EDF={self.edf:6.2f}  '
-            f'Ref.df={self.ref_df:3d}  '
-            f'{self.test_type}={self.test_stat:8.4f}  '
-            f'p={self.p_value:7.4f}'
+            f"{self.smooth_name:20s} "
+            f"EDF={self.edf:6.2f}  "
+            f"Ref.df={self.ref_df:3d}  "
+            f"{self.test_type}={self.test_stat:8.4f}  "
+            f"p={self.p_value:7.4f}"
         )
 
 
@@ -128,7 +126,7 @@ class SmoothTestSuite:
         deviance_full: float,
         deviance_null_dict: dict[int, float],
         dispersion: float = 1.0,
-        test_type: str = 'F',
+        test_type: str = "F",
     ) -> None:
         """Initialize test suite.
 
@@ -170,16 +168,16 @@ class SmoothTestSuite:
     def summary(self) -> str:
         """Return summary table."""
         lines = [
-            'Smooth term tests',
-            '=================',
-            f'Test type: {self.test_type}',
-            '',
+            "Smooth term tests",
+            "=================",
+            f"Test type: {self.test_type}",
+            "",
             f'{"Smooth Term":<20} {"EDF":>6} {"Ref.df":>8} {f"{self.test_type} Stat":>10} {"p-value":>8}',
-            '-' * 60,
+            "-" * 60,
         ]
         for test in self.tests:
             lines.append(test.summary())
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def p_values(self) -> list[float]:
         """Return p-values."""
@@ -187,10 +185,7 @@ class SmoothTestSuite:
 
     def significant_terms(self, alpha: float = 0.05) -> list[str]:
         """Return names of significant terms at level α."""
-        return [
-            test.smooth_name for test in self.tests
-            if test.p_value < alpha
-        ]
+        return [test.smooth_name for test in self.tests if test.p_value < alpha]
 
 
 def compute_smooth_tests(
@@ -200,7 +195,7 @@ def compute_smooth_tests(
     smooth_names: list[str],
     ref_dfs: list[int],
     dispersion: float = 1.0,
-    null_deviances: Optional[dict[int, float]] = None,
+    null_deviances: dict[int, float] | None = None,
 ) -> SmoothTestSuite:
     """Run smooth term tests.
 
@@ -230,7 +225,7 @@ def compute_smooth_tests(
         deviance_full=deviance_full,
         deviance_null_dict=null_deviances,
         dispersion=dispersion,
-        test_type='F',
+        test_type="F",
     )
 
     return suite

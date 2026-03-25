@@ -4,7 +4,7 @@ For GAMs, we need to choose the smoothing parameter λ. Two common approaches:
 
 1. AIC (Akaike Information Criterion):
    AIC = N log(RSS/N) + 2 * EDF
-   
+
    where:
    - RSS = residual sum of squares
    - EDF = effective degrees of freedom (trace of hat matrix)
@@ -12,7 +12,7 @@ For GAMs, we need to choose the smoothing parameter λ. Two common approaches:
 
 2. UBRE (Unbiased Risk Estimator):
    UBRE = RSS/N + 2 * σ² * EDF/N
-   
+
    where σ² is the residual variance.
 
 Both criteria balance fit (RSS) with model complexity (EDF).
@@ -32,16 +32,13 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
-
 import numpy as np
-from scipy.optimize import minimize_scalar
 
 
 def compute_aic(
     residuals: np.ndarray,
     edf: float,
-    n: Optional[int] = None,
+    n: int | None = None,
 ) -> float:
     """Compute AIC for a GAM model.
 
@@ -58,13 +55,13 @@ def compute_aic(
     residuals = np.asarray(residuals)
     if n is None:
         n = len(residuals)
-    
-    rss = np.sum(residuals ** 2)
-    
+
+    rss = np.sum(residuals**2)
+
     # Avoid log(0)
     if rss <= 0:
         return np.inf
-    
+
     aic = n * np.log(rss / n) + 2 * edf
     return aic
 
@@ -72,8 +69,8 @@ def compute_aic(
 def compute_ubre(
     residuals: np.ndarray,
     edf: float,
-    sigma2: Optional[float] = None,
-    n: Optional[int] = None,
+    sigma2: float | None = None,
+    n: int | None = None,
 ) -> float:
     """Compute UBRE for a GAM model.
 
@@ -91,13 +88,13 @@ def compute_ubre(
     residuals = np.asarray(residuals)
     if n is None:
         n = len(residuals)
-    
-    rss = np.sum(residuals ** 2)
-    
+
+    rss = np.sum(residuals**2)
+
     if sigma2 is None:
         # Estimate from residuals (biased, but common)
         sigma2 = rss / n
-    
+
     ubre = rss / n + 2 * sigma2 * edf / n
     return ubre
 
@@ -106,9 +103,9 @@ def select_lambda_aic(
     y: np.ndarray,
     X: np.ndarray,
     S: np.ndarray,
-    lambdas: Optional[np.ndarray] = None,
-    family_name: str = 'gaussian',
-) -> Tuple[float, float, np.ndarray]:
+    lambdas: np.ndarray | None = None,
+    family_name: str = "gaussian",
+) -> tuple[float, float, np.ndarray]:
     """Select smoothing parameter using AIC.
 
     For each λ, fit GAM and compute AIC.
@@ -125,43 +122,43 @@ def select_lambda_aic(
     """
     if lambdas is None:
         lambdas = np.logspace(-3, 3, 20)
-    
+
     aics = []
     edfs = []
-    
+
     for lam in lambdas:
         try:
             # Fit model (simple case: Gaussian, no link function complications)
             XTX = X.T @ X
             XTy = X.T @ y
-            
+
             # Regularized fit
             H = XTX + lam * S
             beta = np.linalg.solve(H, XTy)
-            
+
             # Predictions and residuals
             y_pred = X @ beta
             residuals = y - y_pred
-            
+
             # EDF ≈ trace(X @ inv(XTX + λS) @ XTX)
             try:
                 H_inv = np.linalg.inv(H)
                 edf = np.trace(X @ H_inv @ XTX)
             except np.linalg.LinAlgError:
                 edf = X.shape[1] / 2  # Rough estimate if inversion fails
-            
+
             aic = compute_aic(residuals, edf, n=len(y))
             aics.append(aic)
             edfs.append(edf)
         except:
             aics.append(np.inf)
             edfs.append(np.nan)
-    
+
     aics = np.array(aics)
     best_idx = np.argmin(aics)
     optimal_lambda = lambdas[best_idx]
     min_aic = aics[best_idx]
-    
+
     return optimal_lambda, min_aic, aics
 
 
@@ -169,9 +166,9 @@ def select_lambda_ubre(
     y: np.ndarray,
     X: np.ndarray,
     S: np.ndarray,
-    lambdas: Optional[np.ndarray] = None,
-    family_name: str = 'gaussian',
-) -> Tuple[float, float, np.ndarray]:
+    lambdas: np.ndarray | None = None,
+    family_name: str = "gaussian",
+) -> tuple[float, float, np.ndarray]:
     """Select smoothing parameter using UBRE.
 
     Args:
@@ -186,42 +183,42 @@ def select_lambda_ubre(
     """
     if lambdas is None:
         lambdas = np.logspace(-3, 3, 20)
-    
+
     ubres = []
     edfs = []
-    
+
     for lam in lambdas:
         try:
             XTX = X.T @ X
             XTy = X.T @ y
-            
+
             H = XTX + lam * S
             beta = np.linalg.solve(H, XTy)
-            
+
             y_pred = X @ beta
             residuals = y - y_pred
-            
+
             try:
                 H_inv = np.linalg.inv(H)
                 edf = np.trace(X @ H_inv @ XTX)
             except np.linalg.LinAlgError:
                 edf = X.shape[1] / 2
-            
+
             # Estimate sigma2 from residuals
-            sigma2 = np.sum(residuals ** 2) / len(y)
-            
+            sigma2 = np.sum(residuals**2) / len(y)
+
             ubre = compute_ubre(residuals, edf, sigma2=sigma2, n=len(y))
             ubres.append(ubre)
             edfs.append(edf)
         except:
             ubres.append(np.inf)
             edfs.append(np.nan)
-    
+
     ubres = np.array(ubres)
     best_idx = np.argmin(ubres)
     optimal_lambda = lambdas[best_idx]
     min_ubre = ubres[best_idx]
-    
+
     return optimal_lambda, min_ubre, ubres
 
 
@@ -229,7 +226,7 @@ def compare_criteria(
     y: np.ndarray,
     X: np.ndarray,
     S: np.ndarray,
-    lambdas: Optional[np.ndarray] = None,
+    lambdas: np.ndarray | None = None,
 ) -> dict:
     """Compare AIC and UBRE criteria for λ selection.
 
@@ -244,13 +241,13 @@ def compare_criteria(
     """
     lam_aic, aic_min, aics = select_lambda_aic(y, X, S, lambdas)
     lam_ubre, ubre_min, ubres = select_lambda_ubre(y, X, S, lambdas)
-    
+
     return {
-        'lambdas': lambdas if lambdas is not None else np.logspace(-3, 3, 20),
-        'aic_values': aics,
-        'ubre_values': ubres,
-        'optimal_lambda_aic': lam_aic,
-        'min_aic': aic_min,
-        'optimal_lambda_ubre': lam_ubre,
-        'min_ubre': ubre_min,
+        "lambdas": lambdas if lambdas is not None else np.logspace(-3, 3, 20),
+        "aic_values": aics,
+        "ubre_values": ubres,
+        "optimal_lambda_aic": lam_aic,
+        "min_aic": aic_min,
+        "optimal_lambda_ubre": lam_ubre,
+        "min_ubre": ubre_min,
     }

@@ -17,8 +17,8 @@ import pytest
 
 from pymgcv import GAM
 
-
 # ── Fixtures ────────────────────────────────────────────────────────
+
 
 @pytest.fixture()
 def gaussian_data() -> pd.DataFrame:
@@ -51,6 +51,7 @@ def multi_data() -> pd.DataFrame:
 
 # ── Gaussian GAM ────────────────────────────────────────────────────
 
+
 class TestGaussianGAM:
     def test_fit_succeeds(self, gaussian_data: pd.DataFrame) -> None:
         model = GAM("y ~ s(x)", data=gaussian_data)
@@ -81,6 +82,7 @@ class TestGaussianGAM:
 
 # ── Poisson GAM ─────────────────────────────────────────────────────
 
+
 class TestPoissonGAM:
     def test_fit_succeeds(self, poisson_data: pd.DataFrame) -> None:
         model = GAM("y ~ s(x)", family="poisson", data=poisson_data)
@@ -94,6 +96,7 @@ class TestPoissonGAM:
 
 
 # ── Multi-smooth GAM ────────────────────────────────────────────────
+
 
 class TestMultiSmoothGAM:
     def test_fit_two_smooths(self, multi_data: pd.DataFrame) -> None:

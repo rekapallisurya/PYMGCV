@@ -19,8 +19,6 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 
@@ -50,8 +48,8 @@ class PenalizedLikelihood:
         y: np.ndarray,
         family: object,
         S_list: list[np.ndarray],
-        lambda_vec: Optional[np.ndarray] = None,
-        offset: Optional[np.ndarray] = None,
+        lambda_vec: np.ndarray | None = None,
+        offset: np.ndarray | None = None,
         dispersion: float = 1.0,
     ) -> None:
         """Initialize penalized likelihood.
@@ -69,7 +67,9 @@ class PenalizedLikelihood:
         self.y = np.asarray(y, dtype=np.float64)
         self.family = family
         self.S_list = [np.asarray(S, dtype=np.float64) for S in S_list]
-        self.offset = np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
+        self.offset = (
+            np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
+        )
         self.dispersion = float(dispersion)
 
         self.n, self.p = self.X.shape
@@ -81,8 +81,8 @@ class PenalizedLikelihood:
 
         if len(self.lambda_vec) != len(self.S_list):
             raise ValueError(
-                f'Number of smoothing parameters ({len(self.lambda_vec)}) '
-                f'does not match number of penalty matrices ({len(self.S_list)})'
+                f"Number of smoothing parameters ({len(self.lambda_vec)}) "
+                f"does not match number of penalty matrices ({len(self.S_list)})"
             )
 
         # Construct combined penalty matrix
@@ -90,8 +90,8 @@ class PenalizedLikelihood:
 
         # Current coefficient estimate
         self.current_beta = np.zeros(self.p)
-        self.current_eta: Optional[np.ndarray] = None  # Linear predictor
-        self.current_mu: Optional[np.ndarray] = None  # Mean
+        self.current_eta: np.ndarray | None = None  # Linear predictor
+        self.current_mu: np.ndarray | None = None  # Mean
 
     def _construct_combined_penalty(self) -> np.ndarray:
         """Construct combined penalty Sλ = Σⱼ λⱼ Sⱼ."""
@@ -103,7 +103,7 @@ class PenalizedLikelihood:
     def set_lambda(self, lambda_vec: np.ndarray) -> None:
         """Update smoothing parameters and recompute penalty."""
         if len(lambda_vec) != len(self.S_list):
-            raise ValueError(f'Expected {len(self.S_list)} smoothing parameters')
+            raise ValueError(f"Expected {len(self.S_list)} smoothing parameters")
         self.lambda_vec = np.asarray(lambda_vec, dtype=np.float64)
         self.S = self._construct_combined_penalty()
 
@@ -120,7 +120,7 @@ class PenalizedLikelihood:
         """
         # Linear predictor
         eta = self.X @ beta + self.offset
-        
+
         # Mean (via link function)
         mu = self.family.linkinv(eta)
 
@@ -153,10 +153,10 @@ class PenalizedLikelihood:
         # For GLMs: ∇L = -Xᵀ (y - μ) * (dμ/dη) + 2 Sλ β
         # Variance function
         var_mu = self.family.variance(mu, self.dispersion)
-        
+
         # Gradient of deviance
         grad_deviance = -self.X.T @ ((self.y - mu) / var_mu * self.family.dmu_deta(eta))
-        
+
         # Penalty gradient
         grad_penalty = 2 * self.S @ beta
 
@@ -190,35 +190,35 @@ class PenalizedLikelihood:
         """
         eta = self.X @ beta + self.offset
         mu = self.family.linkinv(eta)
-        
+
         # GLM weight matrix
         var_mu = self.family.variance(mu, self.dispersion)
         dmu_deta = self.family.dmu_deta(eta)
-        
+
         # W is diagonal: w_ii = (dμ/dη)² / Var(y)
         w = (dmu_deta**2) / var_mu
-        
+
         # X^T W X
         XtWX = self.X.T @ (self.X * w[:, np.newaxis])
-        
+
         # Penalty Hessian
         H_penalty = 2 * self.S
-        
+
         return XtWX + H_penalty
 
     def summary(self) -> str:
         """Return summary of the objective."""
         lines = [
-            'Penalized Likelihood',
-            '====================',
-            f'Observations: {self.n}',
-            f'Coefficients: {self.p}',
-            f'Family: {self.family.__class__.__name__}',
-            f'Dispersion: {self.dispersion:.6f}',
-            f'Smoothing parameters: {self.lambda_vec}',
-            f'Combined penalty rank: {np.linalg.matrix_rank(self.S)}',
+            "Penalized Likelihood",
+            "====================",
+            f"Observations: {self.n}",
+            f"Coefficients: {self.p}",
+            f"Family: {self.family.__class__.__name__}",
+            f"Dispersion: {self.dispersion:.6f}",
+            f"Smoothing parameters: {self.lambda_vec}",
+            f"Combined penalty rank: {np.linalg.matrix_rank(self.S)}",
         ]
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 class GaussianPenalizedLikelihood(PenalizedLikelihood):
@@ -236,7 +236,7 @@ class GaussianPenalizedLikelihood(PenalizedLikelihood):
         X: np.ndarray,
         y: np.ndarray,
         S_list: list[np.ndarray],
-        lambda_vec: Optional[np.ndarray] = None,
+        lambda_vec: np.ndarray | None = None,
     ) -> None:
         """Initialize Gaussian penalized likelihood.
 
@@ -248,8 +248,9 @@ class GaussianPenalizedLikelihood(PenalizedLikelihood):
         """
         # Create a dummy Gaussian family
         from pymgcv.distributions.family_base import GaussianFamily
+
         family = GaussianFamily()
-        
+
         super().__init__(
             X=X,
             y=y,
@@ -279,12 +280,12 @@ class GaussianPenalizedLikelihood(PenalizedLikelihood):
             Solution β.
         """
         from scipy import linalg
-        
+
         XtX = self.X.T @ self.X
         Xty = self.X.T @ self.y
-        
+
         # Solve (X^T X + S) β = X^T y
         A = XtX + self.S
         beta = linalg.solve(A, Xty)
-        
+
         return beta

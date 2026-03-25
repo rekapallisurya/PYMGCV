@@ -11,8 +11,6 @@ References:
 
 from __future__ import annotations
 
-from typing import Dict
-
 import numpy as np
 
 from pymgcv.api.gam import GAM
@@ -48,8 +46,8 @@ def concurvity(X_smooth: np.ndarray, indices: list[slice]) -> dict:
             # Projected: H_B @ A = Q @ Q.T @ A
             A_proj = Q @ (Q.T @ A)
             # R² per column
-            norms_A = np.maximum(np.sum(A ** 2, axis=0), 1e-12)
-            norms_proj = np.sum(A_proj ** 2, axis=0)
+            norms_A = np.maximum(np.sum(A**2, axis=0), 1e-12)
+            norms_proj = np.sum(A_proj**2, axis=0)
             r2_vals = norms_proj / norms_A
             return float(np.max(np.clip(r2_vals, 0, 1)))
         except Exception:
@@ -74,12 +72,10 @@ def concurvity(X_smooth: np.ndarray, indices: list[slice]) -> dict:
     except:
         overall_concurv = 0.0
 
-    results['concurvity_matrix'] = concurv_matrix
-    results['overall'] = np.clip(overall_concurv, 0, 1)
-    results['pairwise'] = {
-        (i, j): concurv_matrix[i, j]
-        for i in range(n_smooths)
-        for j in range(i + 1, n_smooths)
+    results["concurvity_matrix"] = concurv_matrix
+    results["overall"] = np.clip(overall_concurv, 0, 1)
+    results["pairwise"] = {
+        (i, j): concurv_matrix[i, j] for i in range(n_smooths) for j in range(i + 1, n_smooths)
     }
 
     return results
@@ -103,19 +99,21 @@ class ConcurvityDiagnostics:
             threshold: Concurvity threshold for warning.
         """
         if not model.fitted:
-            raise RuntimeError('Model not fitted')
+            raise RuntimeError("Model not fitted")
 
         self.model = model
         self.threshold = threshold
 
         # Extract smooth basis matrix (design matrix minus parametric cols)
         X = model.model_matrix.X
-        n_parametric = model.model_matrix.n_parametric if hasattr(model.model_matrix, 'n_parametric') else 0
+        n_parametric = (
+            model.model_matrix.n_parametric if hasattr(model.model_matrix, "n_parametric") else 0
+        )
 
         X_smooth = X[:, n_parametric:]
 
         # Construct indices for each smooth term
-        if hasattr(model, 'smoothing_parameters'):
+        if hasattr(model, "smoothing_parameters"):
             n_smooths = len(model.smoothing_parameters)
             basis_dim_per_smooth = X_smooth.shape[1] // max(1, n_smooths)
             indices = [
@@ -127,13 +125,12 @@ class ConcurvityDiagnostics:
 
         # Compute concurvity
         self.concurvity_result = concurvity(X_smooth, indices)
-        self.pairwise_concurv = self.concurvity_result.get('pairwise', {})
-        self.overall_concurv = self.concurvity_result.get('overall', 0.0)
+        self.pairwise_concurv = self.concurvity_result.get("pairwise", {})
+        self.overall_concurv = self.concurvity_result.get("overall", 0.0)
 
         # Flag high concurvity pairs
         self.high_concurv_pairs = [
-            (i, j) for (i, j), v in self.pairwise_concurv.items()
-            if v > threshold
+            (i, j) for (i, j), v in self.pairwise_concurv.items() if v > threshold
         ]
 
     def summary(self) -> str:
@@ -143,31 +140,33 @@ class ConcurvityDiagnostics:
             String summary.
         """
         lines = [
-            'Concurvity Diagnostics',
-            '======================',
-            '',
-            f'Overall concurvity: {self.overall_concurv:.4f}',
-            '',
+            "Concurvity Diagnostics",
+            "======================",
+            "",
+            f"Overall concurvity: {self.overall_concurv:.4f}",
+            "",
         ]
 
         if self.high_concurv_pairs:
-            lines.append('High concurvity pairs (threshold > 0.8):')
+            lines.append("High concurvity pairs (threshold > 0.8):")
             for i, j in self.high_concurv_pairs:
                 lines.append(
-                    f'  Smooth_{i} × Smooth_{j}: {self.pairwise_concurv.get((i, j), 0):.4f}'
+                    f"  Smooth_{i} × Smooth_{j}: {self.pairwise_concurv.get((i, j), 0):.4f}"
                 )
         else:
-            lines.append('No problematic concurvity detected.')
+            lines.append("No problematic concurvity detected.")
 
-        lines.extend([
-            '',
-            'Interpretation:',
-            '  - Concurvity > 0.8: High collinearity, estimates unstable',
-            '  - Concurvity < 0.5: Low collinearity, comfortable',
-            '  - Overall > 0.9: Serious multicollinearity problem',
-        ])
+        lines.extend(
+            [
+                "",
+                "Interpretation:",
+                "  - Concurvity > 0.8: High collinearity, estimates unstable",
+                "  - Concurvity < 0.5: Low collinearity, comfortable",
+                "  - Overall > 0.9: Serious multicollinearity problem",
+            ]
+        )
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def has_problems(self, threshold: float | None = None) -> bool:
         """Check if concurvity indicates problems.
@@ -179,7 +178,6 @@ class ConcurvityDiagnostics:
             True if problematic concurvity detected.
         """
         thresh = threshold or self.threshold
-        return (
-            self.overall_concurv > 0.95 or
-            any(v > thresh for v in self.pairwise_concurv.values())
+        return self.overall_concurv > 0.95 or any(
+            v > thresh for v in self.pairwise_concurv.values()
         )

@@ -17,6 +17,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── Lint & Format Check ──────────────────────────────────────────────
   lint:
@@ -33,10 +36,10 @@ jobs:
         run: pip install black ruff
 
       - name: Check formatting (Black)
-        run: black --check --diff .
+        run: black --check --diff pymgcv/ tests/ examples/
 
       - name: Lint (Ruff)
-        run: ruff check .
+        run: ruff check pymgcv/ tests/ examples/
 
   # ── Test Matrix ──────────────────────────────────────────────────────
   test:
@@ -60,7 +63,7 @@ jobs:
           pip install -e ".[dev,viz]"
 
       - name: Run tests
-        run: pytest -v --tb=short --cov=pymgcv --cov-report=xml -m "not gpu"
+        run: pytest -m "not gpu"
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'

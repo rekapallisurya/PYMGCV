@@ -7,8 +7,6 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 from pymgcv.api.gam import GAM
@@ -59,7 +57,7 @@ def dfbetas(
     X: np.ndarray,
     residuals: np.ndarray,
     leverage_vals: np.ndarray,
-    XtX_inv: Optional[np.ndarray] = None,
+    XtX_inv: np.ndarray | None = None,
     scale: float = 1.0,
 ) -> np.ndarray:
     """Compute DFBETAS (change in coefficients when observation removed).
@@ -88,9 +86,7 @@ def dfbetas(
     dfbetas_mat = np.zeros((n, p))
 
     for i in range(n):
-        dfbetas_mat[i, :] = (
-            XtX_inv @ X[i, :] * residuals[i] / (scale * denom[i])
-        )
+        dfbetas_mat[i, :] = XtX_inv @ X[i, :] * residuals[i] / (scale * denom[i])
 
     return dfbetas_mat
 
@@ -114,16 +110,16 @@ class InfluenceDiagnostics:
             threshold: Percentile threshold for flagging influential points.
         """
         if not model.fitted:
-            raise RuntimeError('Model not fitted')
+            raise RuntimeError("Model not fitted")
 
         self.model = model
         self.threshold = threshold
 
         # Extract components
         X = model.model_matrix.X
-        y = model.data[model.formula.split('~')[0].strip()].values
+        y = model.data[model.formula.split("~")[0].strip()].values
         beta = model.beta
-        fitted = model.predict(model.data, scale='response')
+        fitted = model.predict(model.data, scale="response")
         residuals = y - fitted
 
         # Estimate scale (dispersion)
@@ -132,16 +128,12 @@ class InfluenceDiagnostics:
         # Compute hat matrix diagonal (leverage)
         try:
             XtX_inv = np.linalg.inv(X.T @ X + 1e-8 * np.eye(X.shape[1]))
-            self.leverage_vals = np.array([
-                X[i, :] @ XtX_inv @ X[i, :] for i in range(len(y))
-            ])
+            self.leverage_vals = np.array([X[i, :] @ XtX_inv @ X[i, :] for i in range(len(y))])
         except:
             self.leverage_vals = np.ones(len(y)) / len(y)
 
         # Compute Cook's distance
-        self.cooks_d = cooks_distance(
-            residuals, self.leverage_vals, self.scale, len(beta)
-        )
+        self.cooks_d = cooks_distance(residuals, self.leverage_vals, self.scale, len(beta))
 
         # Compute DFBETAS
         try:
@@ -161,26 +153,26 @@ class InfluenceDiagnostics:
             String summary.
         """
         lines = [
-            'Influence Diagnostics',
-            '====================',
-            '',
-            'Leverage (hat diagonal):',
-            f'  Min: {np.min(self.leverage_vals):.6f}',
-            f'  Mean: {np.mean(self.leverage_vals):.6f}',
-            f'  Max: {np.max(self.leverage_vals):.6f}',
-            '',
+            "Influence Diagnostics",
+            "====================",
+            "",
+            "Leverage (hat diagonal):",
+            f"  Min: {np.min(self.leverage_vals):.6f}",
+            f"  Mean: {np.mean(self.leverage_vals):.6f}",
+            f"  Max: {np.max(self.leverage_vals):.6f}",
+            "",
             "Cook's Distance:",
-            f'  Min: {np.min(self.cooks_d):.6f}',
-            f'  Mean: {np.mean(self.cooks_d):.6f}',
-            f'  Max: {np.max(self.cooks_d):.6f}',
-            '',
-            f'Influential observations (top {len(self.influential_obs)}):',
+            f"  Min: {np.min(self.cooks_d):.6f}",
+            f"  Mean: {np.mean(self.cooks_d):.6f}",
+            f"  Max: {np.max(self.cooks_d):.6f}",
+            "",
+            f"Influential observations (top {len(self.influential_obs)}):",
         ]
 
         for idx in sorted(self.influential_obs)[:10]:
-            lines.append(f'  Obs {idx}: Cook\'s D = {self.cooks_d[idx]:.6e}')
+            lines.append(f"  Obs {idx}: Cook's D = {self.cooks_d[idx]:.6e}")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def get_influential_threshold(self, p: float = 0.05) -> float:
         """Get threshold for influential observations.

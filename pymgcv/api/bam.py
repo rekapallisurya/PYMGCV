@@ -23,7 +23,7 @@ References:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -49,11 +49,11 @@ class BAM(GAM):
     def __init__(
         self,
         formula: str,
-        data: Optional[pd.DataFrame] = None,
-        family: str = 'gaussian',
-        offset: Optional[str] = None,
-        weights: Optional[Any] = None,
-        chunk_size: Optional[int] = None,
+        data: pd.DataFrame | None = None,
+        family: str = "gaussian",
+        offset: str | None = None,
+        weights: Any | None = None,
+        chunk_size: int | None = None,
         discrete: bool = False,
     ) -> None:
         super().__init__(formula=formula, data=data, family=family, offset=offset, weights=weights)
@@ -62,12 +62,12 @@ class BAM(GAM):
 
     def fit(
         self,
-        data: Optional[pd.DataFrame] = None,
+        data: pd.DataFrame | None = None,
         max_outer_iter: int = 10,
         max_inner_iter: int = 25,
         verbose: bool = False,
         use_gpu: bool = False,
-    ) -> 'BAM':
+    ) -> BAM:
         """Fit BAM using QR-accelerated PIRLS.
 
         For Gaussian family, uses one-shot QR + penalized LS without
@@ -88,16 +88,20 @@ class BAM(GAM):
         if data is not None:
             self.data = data
         elif self.data is None:
-            raise ValueError('Data must be provided.')
+            raise ValueError("Data must be provided.")
 
-        from pymgcv.utils.formula_parser import FormulaParser
-        from pymgcv.utils.model_matrix import ModelMatrix
-        from pymgcv.penalties.penalty_matrix import PenaltyMatrix
         from pymgcv.distributions.family_base import (
-            GaussianFamily, PoissonFamily, GammaFamily, TweedieFamily,
-            BinomialFamily, NegativeBinomialFamily, InverseGaussianFamily
+            BinomialFamily,
+            GammaFamily,
+            GaussianFamily,
+            InverseGaussianFamily,
+            NegativeBinomialFamily,
+            PoissonFamily,
+            TweedieFamily,
         )
         from pymgcv.optimizer.edf import EDFComputer
+        from pymgcv.utils.formula_parser import FormulaParser
+        from pymgcv.utils.model_matrix import ModelMatrix
 
         parser = FormulaParser(self.formula)
         self.model_matrix = ModelMatrix(self.data, self.formula)
@@ -110,15 +114,16 @@ class BAM(GAM):
         weights = self._load_weights(self.data, len(y))
 
         family_map = {
-            'gaussian': GaussianFamily(),
-            'poisson': PoissonFamily(),
-            'binomial': BinomialFamily(),
-            'gamma': GammaFamily(shape=1.0),
-            'tweedie': TweedieFamily(power=1.5),
-            'negative.binomial': NegativeBinomialFamily(theta=1.0),
-            'inverse.gaussian': InverseGaussianFamily(),
+            "gaussian": GaussianFamily(),
+            "poisson": PoissonFamily(),
+            "binomial": BinomialFamily(),
+            "gamma": GammaFamily(shape=1.0),
+            "tweedie": TweedieFamily(power=1.5),
+            "negative.binomial": NegativeBinomialFamily(theta=1.0),
+            "inverse.gaussian": InverseGaussianFamily(),
         }
         from pymgcv.distributions.family_base import Family as _Family
+
         if isinstance(self.family_name, _Family):
             self.family = self.family_name
         else:
@@ -126,9 +131,7 @@ class BAM(GAM):
 
         p_total = X.shape[1]
         n = len(y)
-        S_list, smooth_starts, smooth_sizes = self._build_penalties(
-            parser, X, p_total
-        )
+        S_list, smooth_starts, smooth_sizes = self._build_penalties(parser, X, p_total)
 
         # ---- QR acceleration ----
         # Augment [sqrt(w) * X; sqrt(Slambda)] for Gaussian (one shot)
@@ -136,16 +139,21 @@ class BAM(GAM):
 
         if is_gaussian:
             beta, lambda_vec = self._fit_gaussian_qr(
-                X, y, weights, offset, S_list, p_total,
-                max_outer_iter, verbose
+                X, y, weights, offset, S_list, p_total, max_outer_iter, verbose
             )
         else:
             # For non-Gaussian: use standard MAGIC optimizer with QR inside PIRLS
             from pymgcv.optimizer.magic_optimizer import MAGICOptimizer
+
             optimizer = MAGICOptimizer(
-                X=X, y=y, family=self.family, S_list=S_list,
-                smooth_starts=smooth_starts, smooth_sizes=smooth_sizes,
-                offset=offset, dispersion=1.0
+                X=X,
+                y=y,
+                family=self.family,
+                S_list=S_list,
+                smooth_starts=smooth_starts,
+                smooth_sizes=smooth_sizes,
+                offset=offset,
+                dispersion=1.0,
             )
             optimizer.weights = weights if not np.all(weights == 1.0) else None
             result = optimizer.optimize(
@@ -153,8 +161,8 @@ class BAM(GAM):
                 max_inner_iter=max_inner_iter,
                 verbose=verbose,
             )
-            beta = result['coef']
-            lambda_vec = result['smooth_lambda']
+            beta = result["coef"]
+            lambda_vec = result["smooth_lambda"]
 
         self.beta = beta
         self.smoothing_parameters = lambda_vec
@@ -172,6 +180,7 @@ class BAM(GAM):
 
     def _build_penalties(self, parser, X, p_total):
         from pymgcv.penalties.penalty_matrix import PenaltyMatrix
+
         S_list, smooth_starts, smooth_sizes = [], [], []
         for j, smooth_spec in enumerate(parser.smooth_terms):
             if j >= len(self.model_matrix.smooth_bases):
@@ -183,21 +192,21 @@ class BAM(GAM):
             s_start, s_stop = smooth_slice.start, smooth_slice.stop
             actual_basis_dim = s_stop - s_start
             basis_obj = self.model_matrix.smooth_bases[j]
-            if hasattr(basis_obj, 'penalty_matrices'):
+            if hasattr(basis_obj, "penalty_matrices"):
                 for P_small in basis_obj.penalty_matrices():
                     P_embed = np.zeros((p_total, p_total))
                     P_embed[s_start:s_stop, s_start:s_stop] = P_small
                     S_list.append(P_embed)
                     smooth_starts.append(s_start)
                     smooth_sizes.append(actual_basis_dim)
-            elif hasattr(basis_obj, 'S'):
+            elif hasattr(basis_obj, "S"):
                 P_embed = np.zeros((p_total, p_total))
                 P_embed[s_start:s_stop, s_start:s_stop] = basis_obj.S
                 S_list.append(P_embed)
                 smooth_starts.append(s_start)
                 smooth_sizes.append(actual_basis_dim)
             else:
-                penalty_builder = PenaltyMatrix(basis_dim=actual_basis_dim, penalty_type='tprs')
+                penalty_builder = PenaltyMatrix(basis_dim=actual_basis_dim, penalty_type="tprs")
                 P_embed = np.zeros((p_total, p_total))
                 P_embed[s_start:s_stop, s_start:s_stop] = penalty_builder.S
                 S_list.append(P_embed)
@@ -225,7 +234,7 @@ class BAM(GAM):
         Runs outer loop over log(lambda) minimizing GCV,
         solving via QR at each step.
         """
-        from scipy.optimize import minimize_scalar, minimize
+        from scipy.optimize import minimize, minimize_scalar
 
         n = len(y)
         # Ensure offset is a real array
@@ -239,8 +248,8 @@ class BAM(GAM):
         yw = (y - offset) * sqrt_w
 
         # QR decomposition (economy)
-        Q, R = np.linalg.qr(Xw, mode='reduced')
-        Qty = Q.T @ yw          # shape (p,)
+        Q, R = np.linalg.qr(Xw, mode="reduced")
+        Qty = Q.T @ yw  # shape (p,)
         # Now problem is: minimize ||Qty - R beta||^2 + beta^T R^{-T} S_lam R^{-1} beta
 
         def _gcv(log_lam: np.ndarray) -> float:
@@ -252,7 +261,7 @@ class BAM(GAM):
             XtWy = Xw.T @ yw
             A = XtWX + S_lam
             try:
-                beta = linalg.solve(A, XtWy, assume_a='pos')
+                beta = linalg.solve(A, XtWy, assume_a="pos")
             except linalg.LinAlgError:
                 beta = linalg.lstsq(A, XtWy)[0]
             fitted = Xw @ beta
@@ -264,9 +273,9 @@ class BAM(GAM):
             except Exception:
                 dof = float(p)
             dof = np.clip(dof, 0, p)
-            dev = float(np.sum(resid ** 2))
+            dev = float(np.sum(resid**2))
             denom = max(n - dof, 0.5)
-            return n * dev / denom ** 2
+            return n * dev / denom**2
 
         # Initial guess: uniform lambda
         n_lam = len(S_list)
@@ -275,14 +284,15 @@ class BAM(GAM):
         if n_lam == 1:
             # 1D GCV — use minimize_scalar for speed
             from scipy.optimize import minimize_scalar
-            res = minimize_scalar(lambda v: _gcv(np.array([v])), bounds=(-10, 16), method='bounded')
+
+            res = minimize_scalar(lambda v: _gcv(np.array([v])), bounds=(-10, 16), method="bounded")
             log_lam_opt = np.array([res.x])
         else:
             res = minimize(
                 _gcv,
                 x0=log_lam0,
-                method='Nelder-Mead',
-                options={'maxiter': max_outer_iter * 50, 'xatol': 1e-4, 'fatol': 1e-4},
+                method="Nelder-Mead",
+                options={"maxiter": max_outer_iter * 50, "xatol": 1e-4, "fatol": 1e-4},
             )
             log_lam_opt = res.x
 
@@ -293,7 +303,7 @@ class BAM(GAM):
         XtWy = Xw.T @ yw
         A = XtWX + S_lam
         try:
-            beta = linalg.solve(A, XtWy, assume_a='pos')
+            beta = linalg.solve(A, XtWy, assume_a="pos")
         except linalg.LinAlgError:
             beta = linalg.lstsq(A, XtWy)[0]
 
@@ -303,9 +313,9 @@ class BAM(GAM):
 def bam(
     formula: str,
     data: pd.DataFrame,
-    family: str = 'gaussian',
-    offset: Optional[str] = None,
-    weights: Optional[Any] = None,
+    family: str = "gaussian",
+    offset: str | None = None,
+    weights: Any | None = None,
     **kwargs,
 ) -> BAM:
     """Fit a fast GAM (bam) for large datasets.

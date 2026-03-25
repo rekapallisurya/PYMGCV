@@ -26,15 +26,14 @@ Module exports:
 from __future__ import annotations
 
 import warnings
-from typing import Optional
 
 import numpy as np
 from scipy import linalg, spatial
 
-
 # ---------------------------------------------------------------------------
 # Kernel helpers
 # ---------------------------------------------------------------------------
+
 
 def _tps_kernel(r: np.ndarray, d: int, m: int = 2) -> np.ndarray:
     r"""Evaluate the thin-plate-spline radial kernel.
@@ -86,8 +85,8 @@ class ThinPlateSpline:
     def __init__(
         self,
         X: np.ndarray,
-        k: Optional[int] = None,
-        knot_indices: Optional[np.ndarray] = None,
+        k: int | None = None,
+        knot_indices: np.ndarray | None = None,
         m: int = 2,
     ) -> None:
         X = np.asarray(X, dtype=np.float64)
@@ -100,19 +99,16 @@ class ThinPlateSpline:
 
         self.X = X
         self.m = m
-        self.M = self.d + 1               # null-space dimension for m=2
+        self.M = self.d + 1  # null-space dimension for m=2
         self.k = k if k is not None else min(self.n, 10)
 
         if self.k > self.n:
             self.k = self.n
-            warnings.warn(
-                f"Basis dimension k reduced to n={self.n}.", UserWarning
-            )
+            warnings.warn(f"Basis dimension k reduced to n={self.n}.", UserWarning)
         if self.k < self.M + 1:
             self.k = self.M + 1
             warnings.warn(
-                f"k increased to M+1={self.k} (minimum identifiable "
-                f"dimension).",
+                f"k increased to M+1={self.k} (minimum identifiable " f"dimension).",
                 UserWarning,
             )
 
@@ -153,9 +149,7 @@ class ThinPlateSpline:
 
                 km = KMeans(n_clusters=nk, random_state=42, n_init=10)
                 km.fit(self.X)
-                dists = spatial.distance.cdist(
-                    km.cluster_centers_, self.X
-                )
+                dists = spatial.distance.cdist(km.cluster_centers_, self.X)
                 return np.argmin(dists, axis=1)
             except ImportError:
                 idx = np.arange(self.n)
@@ -182,9 +176,7 @@ class ThinPlateSpline:
         k = self.k
 
         # 1. Full kernel matrix at knots
-        dists_kk = spatial.distance.cdist(
-            self.knots, self.knots, "euclidean"
-        )
+        dists_kk = spatial.distance.cdist(self.knots, self.knots, "euclidean")
         E = _tps_kernel(dists_kk, self.d, self.m)
         E = 0.5 * (E + E.T)  # symmetrise
 
@@ -193,7 +185,7 @@ class ThinPlateSpline:
 
         # 3. QR of T -> orthogonal complement Z
         Q_full = linalg.qr(T, mode="full")[0]  # (nk, nk)
-        Z = Q_full[:, M:]                       # (nk, nk - M)
+        Z = Q_full[:, M:]  # (nk, nk - M)
 
         # 4. Eigen-decompose Z'EZ
         ZtEZ = Z.T @ E @ Z
@@ -225,9 +217,7 @@ class ThinPlateSpline:
             B_null = T.copy()
             B_range = E @ F_pred  # = Z @ U_k_reparam
         else:
-            dists_xk = spatial.distance.cdist(
-                self.X, self.knots, "euclidean"
-            )
+            dists_xk = spatial.distance.cdist(self.X, self.knots, "euclidean")
             E_xk = _tps_kernel(dists_xk, self.d, self.m)
             T_x = np.column_stack([np.ones(self.n), self.X])
             B_null = T_x
@@ -256,14 +246,14 @@ class ThinPlateSpline:
         into the basis by rotating the parameter space so the constrained
         direction is dropped.  Both B and S are transformed.
         """
-        C = self.B.mean(axis=0).reshape(-1, 1)       # (k, 1)
-        Q_con, _ = linalg.qr(C, mode='full')         # Q: (k, k)
-        Z_con = Q_con[:, 1:]                          # (k, k-1)
+        C = self.B.mean(axis=0).reshape(-1, 1)  # (k, 1)
+        Q_con, _ = linalg.qr(C, mode="full")  # Q: (k, k)
+        Z_con = Q_con[:, 1:]  # (k, k-1)
 
         self.B = self.B @ Z_con
         self.S = Z_con.T @ self.S @ Z_con
-        self._constraint_Z = Z_con                    # store for predict
-        self._col_means = None                        # not used with QR
+        self._constraint_Z = Z_con  # store for predict
+        self._col_means = None  # not used with QR
         self.k = self.B.shape[1]
 
     # ------------------------------------------------------------------
@@ -272,8 +262,8 @@ class ThinPlateSpline:
 
     def _construct_rbf_matrix(
         self,
-        X1: Optional[np.ndarray] = None,
-        X2: Optional[np.ndarray] = None,
+        X1: np.ndarray | None = None,
+        X2: np.ndarray | None = None,
     ) -> np.ndarray:
         """Evaluate TPS kernel between two point sets."""
         if X1 is None:
@@ -312,14 +302,10 @@ class ThinPlateSpline:
         if X_new.ndim == 1:
             X_new = X_new.reshape(-1, 1)
         if X_new.shape[1] != self.d:
-            raise ValueError(
-                f"X_new has dim {X_new.shape[1]}, expected {self.d}"
-            )
+            raise ValueError(f"X_new has dim {X_new.shape[1]}, expected {self.d}")
 
         T_new = np.column_stack([np.ones(len(X_new)), X_new])
-        dists_new = spatial.distance.cdist(
-            X_new, self.knots, "euclidean"
-        )
+        dists_new = spatial.distance.cdist(X_new, self.knots, "euclidean")
         E_new = _tps_kernel(dists_new, self.d, self.m)
         B_range_new = E_new @ self._F_k
         B_raw = np.column_stack([T_new, B_range_new])
@@ -333,7 +319,7 @@ class ThinPlateSpline:
 
 def thin_plate_basis(
     X: np.ndarray,
-    k: Optional[int] = None,
+    k: int | None = None,
 ) -> np.ndarray:
     """Functional API for thin plate regression spline basis.
 

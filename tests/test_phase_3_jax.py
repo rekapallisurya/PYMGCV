@@ -8,16 +8,16 @@ Tests:
 
 from __future__ import annotations
 
-import pytest
 import numpy as np
 import pandas as pd
+import pytest
 
+from pymgcv.api.gam import GAM
 from pymgcv.optimizer.jax_acceleration import (
     device_info,
-    jax_pirls_iteration,
     jax_gradient_function,
+    jax_pirls_iteration,
 )
-from pymgcv.api.gam import GAM
 
 
 class TestJAXAcceleration:
@@ -27,7 +27,7 @@ class TestJAXAcceleration:
         """Test JAX device detection."""
         info = device_info()
         assert isinstance(info, dict)
-        assert 'available' in info
+        assert "available" in info
         # Device info won't crash even if JAX not installed
 
     def test_jax_pirls_iteration(self) -> None:
@@ -64,8 +64,8 @@ class TestGAMClass:
 
     def test_gam_initialization(self) -> None:
         """Test GAM initialization."""
-        model = GAM('y ~ s(x1) + s(x2)')
-        assert model.formula == 'y ~ s(x1) + s(x2)'
+        model = GAM("y ~ s(x1) + s(x2)")
+        assert model.formula == "y ~ s(x1) + s(x2)"
         assert model.fitted is False
         assert model.beta is None
 
@@ -77,9 +77,9 @@ class TestGAMClass:
         x2 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.cos(2 * np.pi * x2) + np.random.normal(0, 0.1, n)
 
-        data = pd.DataFrame({'x1': x1, 'x2': x2, 'y': y})
+        data = pd.DataFrame({"x1": x1, "x2": x2, "y": y})
 
-        model = GAM('y ~ s(x1) + s(x2)', family='gaussian')
+        model = GAM("y ~ s(x1) + s(x2)", family="gaussian")
         model.fit(data, verbose=False)
 
         assert model.fitted
@@ -96,14 +96,14 @@ class TestGAMClass:
         x2 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.random.normal(0, 0.1, n)
 
-        data = pd.DataFrame({'x1': x1, 'x2': x2, 'y': y})
+        data = pd.DataFrame({"x1": x1, "x2": x2, "y": y})
 
-        model = GAM('y ~ s(x1)', family='gaussian')
+        model = GAM("y ~ s(x1)", family="gaussian")
         model.fit(data)
 
         # Predict on same data
-        pred_response = model.predict(data, scale='response')
-        pred_link = model.predict(data, scale='link')
+        pred_response = model.predict(data, scale="response")
+        pred_link = model.predict(data, scale="link")
 
         assert pred_response.shape == (n,)
         assert pred_link.shape == (n,)
@@ -117,15 +117,15 @@ class TestGAMClass:
         x1 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.random.normal(0, 0.1, n)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
-        model = GAM('y ~ s(x1)', family='gaussian')
+        model = GAM("y ~ s(x1)", family="gaussian")
         model.fit(data)
 
         summary = model.summary()
         assert isinstance(summary, str)
-        assert 'Family' in summary
-        assert 'Formula' in summary
+        assert "Family" in summary
+        assert "Formula" in summary
         assert len(summary) > 0
 
     def test_gam_fit_poisson(self) -> None:
@@ -137,9 +137,9 @@ class TestGAMClass:
         mu = np.exp(eta)
         y = np.random.poisson(mu)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
-        model = GAM('y ~ s(x1)', family='poisson')
+        model = GAM("y ~ s(x1)", family="poisson")
         model.fit(data, verbose=False)
 
         assert model.fitted
@@ -155,14 +155,14 @@ class TestGAMClass:
         # Use positive rates: 0.5 + 0.3*sin ensures range [0.2, 0.8] > 0
         y = np.random.poisson(exposure * (0.5 + 0.3 * np.sin(2 * np.pi * x1)))
 
-        data = pd.DataFrame({'x1': x1, 'y': y, 'exposure': exposure})
+        data = pd.DataFrame({"x1": x1, "y": y, "exposure": exposure})
 
         # Note: offset handling via design matrix
-        model = GAM('y ~ s(x1)', family='poisson')
+        model = GAM("y ~ s(x1)", family="poisson")
         model.fit(data, verbose=False)
 
         assert model.fitted
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

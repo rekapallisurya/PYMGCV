@@ -17,26 +17,27 @@ import pytest
 from pymgcv.smooth.cyclic_spline import CyclicSpline
 from pymgcv.smooth.random_effect import RandomEffect
 
-
 # ── Fixtures / helpers ────────────────────────────────────────────────────────
+
 
 def make_factor_data(n=120, seed=7):
     rng = np.random.default_rng(seed)
     x = rng.normal(0, 1, n)
-    group = np.array(['A', 'B', 'C'] * (n // 3))[:n]
-    effect = np.where(group == 'A', 2.0, np.where(group == 'B', -1.0, 0.5))
+    group = np.array(["A", "B", "C"] * (n // 3))[:n]
+    effect = np.where(group == "A", 2.0, np.where(group == "B", -1.0, 0.5))
     y = np.sin(x) * effect + rng.normal(0, 0.3, n)
-    return pd.DataFrame({'x': x, 'group': group, 'y': y})
+    return pd.DataFrame({"x": x, "group": group, "y": y})
 
 
 def make_continuous_data(n=100, seed=11):
     rng = np.random.default_rng(seed)
     x = rng.uniform(0, 2 * np.pi, n)
     y = np.sin(x) + rng.normal(0, 0.2, n)
-    return pd.DataFrame({'x': x, 'y': y})
+    return pd.DataFrame({"x": x, "y": y})
 
 
 # ── Cyclic Spline ─────────────────────────────────────────────────────────────
+
 
 class TestCyclicSpline:
     def test_basis_shape(self):
@@ -82,50 +83,51 @@ class TestCyclicSpline:
 
 # ── Random Effect ─────────────────────────────────────────────────────────────
 
+
 class TestRandomEffect:
     def test_factor_basis_shape(self):
-        group = np.array(['A', 'B', 'C'] * 20)
+        group = np.array(["A", "B", "C"] * 20)
         re = RandomEffect(group)
         assert re.B.shape == (60, 3)
 
     def test_factor_levels_detected(self):
-        group = np.array(['A', 'B', 'C'] * 10)
+        group = np.array(["A", "B", "C"] * 10)
         re = RandomEffect(group)
         assert re.k == 3
-        assert set(re.levels) == {'A', 'B', 'C'}
+        assert set(re.levels) == {"A", "B", "C"}
 
     def test_identity_penalty(self):
-        group = np.array(['X', 'Y', 'Z'] * 10)
+        group = np.array(["X", "Y", "Z"] * 10)
         re = RandomEffect(group)
         np.testing.assert_allclose(re.S, np.eye(3))
 
     def test_factor_basis_binary(self):
         """Basis for factor RE should be 0/1 only."""
-        group = np.array(['A', 'B'] * 15)
+        group = np.array(["A", "B"] * 15)
         re = RandomEffect(group)
         assert re.B.shape == (30, 2)
         assert set(np.unique(re.B)) == {0.0, 1.0}
 
     def test_each_row_sums_to_one(self):
         """Each row of factor RE basis should sum to one (one-hot)."""
-        group = np.array(['cat', 'dog', 'bird'] * 10)
+        group = np.array(["cat", "dog", "bird"] * 10)
         re = RandomEffect(group)
         row_sums = re.B.sum(axis=1)
         np.testing.assert_allclose(row_sums, np.ones(30))
 
     def test_factor_predict(self):
-        group_train = np.array(['A', 'B', 'C'] * 10)
+        group_train = np.array(["A", "B", "C"] * 10)
         re = RandomEffect(group_train)
-        group_new = np.array(['B', 'A'])
+        group_new = np.array(["B", "A"])
         B_new = re.predict(group_new)
         assert B_new.shape == (2, 3)
         # 'B' maps to index 1, so B_new[0, 1] = 1
         level_order = list(re.levels)
-        b_idx = level_order.index('B')
+        b_idx = level_order.index("B")
         assert B_new[0, b_idx] == 1.0
 
     def test_penalty_matrix_method(self):
-        group = np.array(['X', 'Y'] * 10)
+        group = np.array(["X", "Y"] * 10)
         re = RandomEffect(group)
         S = re.penalty_matrix()
         np.testing.assert_allclose(S, np.eye(2))
@@ -133,42 +135,49 @@ class TestRandomEffect:
 
 # ── by-Variable Formula Parser ────────────────────────────────────────────────
 
+
 class TestByVariableParser:
     def test_parse_by_factor(self):
         from pymgcv.utils.formula_parser import FormulaParser
-        parser = FormulaParser('y ~ s(x, by=group)')
+
+        parser = FormulaParser("y ~ s(x, by=group)")
         assert len(parser.smooth_terms) == 1
         spec = parser.smooth_terms[0]
-        assert spec.by_variable == 'group'
+        assert spec.by_variable == "group"
 
     def test_parse_by_continuous(self):
         from pymgcv.utils.formula_parser import FormulaParser
-        parser = FormulaParser('y ~ s(x, by=weight)')
-        assert parser.smooth_terms[0].by_variable == 'weight'
+
+        parser = FormulaParser("y ~ s(x, by=weight)")
+        assert parser.smooth_terms[0].by_variable == "weight"
 
     def test_parse_bs_cc(self):
         from pymgcv.utils.formula_parser import FormulaParser
-        parser = FormulaParser('y ~ s(x, bs=cc)')
+
+        parser = FormulaParser("y ~ s(x, bs=cc)")
         spec = parser.smooth_terms[0]
-        assert spec.basis == 'cc'
+        assert spec.basis == "cc"
 
     def test_parse_re(self):
         from pymgcv.utils.formula_parser import FormulaParser
-        parser = FormulaParser('y ~ re(group)')
+
+        parser = FormulaParser("y ~ re(group)")
         spec = parser.smooth_terms[0]
-        assert spec.term_type == 're'
-        assert spec.basis == 're'
+        assert spec.term_type == "re"
+        assert spec.basis == "re"
 
 
 # ── by-Variable Model Matrix ──────────────────────────────────────────────────
+
 
 class TestByVariableModelMatrix:
     def test_factor_by_expands_columns(self):
         """s(x, by=group) with 3 levels should give 3×(k-1) columns (sum-to-zero constraint)."""
         from pymgcv.utils.model_matrix import ModelMatrix
+
         df = make_factor_data(90)
         k = 8
-        mm = ModelMatrix(df, f'y ~ s(x, by=group, k={k})', center=False)
+        mm = ModelMatrix(df, f"y ~ s(x, by=group, k={k})", center=False)
         # 3 levels × (k-1) basis cols (identifiability constraint drops 1)
         smooth_slice = mm.smooth_indices[0]
         smooth_dim = smooth_slice.stop - smooth_slice.start
@@ -179,21 +188,24 @@ class TestByVariableModelMatrix:
     def test_factor_by_levels_stored(self):
         """by-levels should be stored in smooth_by_levels."""
         from pymgcv.utils.model_matrix import ModelMatrix
+
         df = make_factor_data(60)
-        mm = ModelMatrix(df, 'y ~ s(x, by=group, k=6)', center=False)
+        mm = ModelMatrix(df, "y ~ s(x, by=group, k=6)", center=False)
         levels = mm.smooth_by_levels[0]
         assert levels is not None
-        assert set(levels) == {'A', 'B', 'C'}
+        assert set(levels) == {"A", "B", "C"}
 
     def test_continuous_by_no_expansion(self):
         """Continuous by-variable should not expand columns."""
         from pymgcv.utils.model_matrix import ModelMatrix
+
         rng = np.random.default_rng(0)
         n = 60
-        df = pd.DataFrame({'x': rng.normal(size=n), 'w': rng.uniform(0.5, 2.0, n),
-                           'y': rng.normal(size=n)})
+        df = pd.DataFrame(
+            {"x": rng.normal(size=n), "w": rng.uniform(0.5, 2.0, n), "y": rng.normal(size=n)}
+        )
         k = 6
-        mm = ModelMatrix(df, f'y ~ s(x, by=w, k={k})', center=False)
+        mm = ModelMatrix(df, f"y ~ s(x, by=w, k={k})", center=False)
         smooth_slice = mm.smooth_indices[0]
         smooth_dim = smooth_slice.stop - smooth_slice.start
         # Continuous by: k-1 columns (identifiability constraint on TPRS)
@@ -202,18 +214,19 @@ class TestByVariableModelMatrix:
     def test_basis_zeros_padding(self):
         """Observations in one level should have zero contribution to other-level cols."""
         from pymgcv.utils.model_matrix import ModelMatrix
+
         df = make_factor_data(60)
-        mm = ModelMatrix(df, 'y ~ s(x, by=group, k=5)', center=False)
+        mm = ModelMatrix(df, "y ~ s(x, by=group, k=5)", center=False)
         X = mm.X
         smooth_slice = mm.smooth_indices[0]
         X_smooth = X[:, smooth_slice]
         levels = mm.smooth_by_levels[0]
-        groups = df['group'].values
+        groups = df["group"].values
         k = 5
         k_eff = k - 1  # TPRS identifiability constraint
         # Check that rows for group 'A' (index 0) are 0 in columns for group 'B' and 'C'
         for level_idx, level in enumerate(levels):
-            mask = (groups == level)
+            mask = groups == level
             other_start = 0 if level_idx > 0 else k_eff
             other_end = other_start + k_eff
             # Rows for this level should be zero in the other-level columns
@@ -227,12 +240,14 @@ class TestByVariableModelMatrix:
 
 # ── GAM with by-variable ──────────────────────────────────────────────────────
 
+
 class TestByVariableGAM:
     def test_fit_factor_by(self):
         """GAM with factor by-variable should fit."""
         from pymgcv.api.gam import GAM
+
         df = make_factor_data(90)
-        model = GAM('y ~ s(x, by=group, k=6)', data=df, family='gaussian')
+        model = GAM("y ~ s(x, by=group, k=6)", data=df, family="gaussian")
         model.fit(max_outer_iter=3, max_inner_iter=10, use_gpu=False)
         assert model.fitted
         assert np.all(np.isfinite(model.beta))
@@ -240,34 +255,36 @@ class TestByVariableGAM:
     def test_fit_continuous_by(self):
         """GAM with continuous by-variable should fit."""
         from pymgcv.api.gam import GAM
+
         rng = np.random.default_rng(5)
         n = 80
-        df = pd.DataFrame({
-            'x': rng.normal(size=n),
-            'w': rng.uniform(0.5, 2.0, n),
-            'y': rng.normal(size=n)
-        })
-        model = GAM('y ~ s(x, by=w, k=6)', data=df, family='gaussian')
+        df = pd.DataFrame(
+            {"x": rng.normal(size=n), "w": rng.uniform(0.5, 2.0, n), "y": rng.normal(size=n)}
+        )
+        model = GAM("y ~ s(x, by=w, k=6)", data=df, family="gaussian")
         model.fit(max_outer_iter=3, max_inner_iter=10, use_gpu=False)
         assert model.fitted
 
 
 # ── GAM with Cyclic Spline ───────────────────────────────────────────────────
 
+
 class TestCyclicSplineGAM:
     def test_fit_cyclic(self):
         """GAM with bs='cc' should fit without errors."""
         from pymgcv.api.gam import GAM
+
         df = make_continuous_data(80)
-        model = GAM('y ~ s(x, bs=cc, k=8)', data=df, family='gaussian')
+        model = GAM("y ~ s(x, bs=cc, k=8)", data=df, family="gaussian")
         model.fit(max_outer_iter=3, max_inner_iter=10, use_gpu=False)
         assert model.fitted
 
     def test_cyclic_predictions_finite(self):
         """Predictions from cyclic GAM should be finite."""
         from pymgcv.api.gam import GAM
+
         df = make_continuous_data(60)
-        model = GAM('y ~ s(x, bs=cc, k=8)', data=df, family='gaussian')
+        model = GAM("y ~ s(x, bs=cc, k=8)", data=df, family="gaussian")
         model.fit(max_outer_iter=3, max_inner_iter=10, use_gpu=False)
         preds = model.predict(df)
         assert np.all(np.isfinite(preds))
@@ -275,54 +292,57 @@ class TestCyclicSplineGAM:
 
 # ── GAM with weights ─────────────────────────────────────────────────────────
 
+
 class TestGAMWeights:
     def test_weights_loaded_from_column(self):
         """GAM should accept weights as column name."""
         from pymgcv.api.gam import GAM
+
         rng = np.random.default_rng(99)
         n = 60
-        df = pd.DataFrame({
-            'x': rng.normal(size=n),
-            'y': rng.normal(size=n),
-            'w': rng.uniform(0.5, 2.0, n)
-        })
-        model = GAM('y ~ s(x, k=6)', data=df, family='gaussian', weights='w')
+        df = pd.DataFrame(
+            {"x": rng.normal(size=n), "y": rng.normal(size=n), "w": rng.uniform(0.5, 2.0, n)}
+        )
+        model = GAM("y ~ s(x, k=6)", data=df, family="gaussian", weights="w")
         model.fit(max_outer_iter=3, max_inner_iter=8, use_gpu=False)
         assert model.fitted
 
     def test_weights_array_direct(self):
         """GAM should accept weights as a numpy array."""
         from pymgcv.api.gam import GAM
+
         rng = np.random.default_rng(33)
         n = 60
-        df = pd.DataFrame({'x': rng.normal(size=n), 'y': rng.normal(size=n)})
+        df = pd.DataFrame({"x": rng.normal(size=n), "y": rng.normal(size=n)})
         w = rng.uniform(0.5, 2.0, n)
-        model = GAM('y ~ s(x, k=6)', data=df, family='gaussian', weights=w)
+        model = GAM("y ~ s(x, k=6)", data=df, family="gaussian", weights=w)
         model.fit(max_outer_iter=3, max_inner_iter=8, use_gpu=False)
         assert model.fitted
 
     def test_weights_validation_negative(self):
         """Negative weights should raise ValueError."""
         from pymgcv.api.gam import GAM
+
         rng = np.random.default_rng(1)
         n = 40
-        df = pd.DataFrame({'x': rng.normal(size=n), 'y': rng.normal(size=n)})
+        df = pd.DataFrame({"x": rng.normal(size=n), "y": rng.normal(size=n)})
         w = rng.uniform(-2, 2, n)  # Has negatives
-        model = GAM('y ~ s(x, k=5)', data=df, family='gaussian', weights=w)
-        with pytest.raises(ValueError, match='positive'):
+        model = GAM("y ~ s(x, k=5)", data=df, family="gaussian", weights=w)
+        with pytest.raises(ValueError, match="positive"):
             model.fit(max_outer_iter=2, max_inner_iter=5, use_gpu=False)
 
     def test_weights_different_coefs(self):
         """Weighted fit should converge without error (weights wired through)."""
         from pymgcv.api.gam import GAM
+
         rng = np.random.default_rng(55)
         n = 80
-        df = pd.DataFrame({'x': rng.normal(size=n), 'y': rng.normal(size=n)})
+        df = pd.DataFrame({"x": rng.normal(size=n), "y": rng.normal(size=n)})
         # Extreme weights
         w = np.concatenate([np.full(n // 2, 10.0), np.full(n - n // 2, 0.1)])
 
-        model_std = GAM('y ~ s(x, k=6)', data=df, family='gaussian')
-        model_wtd = GAM('y ~ s(x, k=6)', data=df, family='gaussian', weights=w)
+        model_std = GAM("y ~ s(x, k=6)", data=df, family="gaussian")
+        model_wtd = GAM("y ~ s(x, k=6)", data=df, family="gaussian", weights=w)
 
         model_std.fit(max_outer_iter=3, max_inner_iter=8, use_gpu=False)
         model_wtd.fit(max_outer_iter=3, max_inner_iter=8, use_gpu=False)
@@ -337,15 +357,14 @@ class TestGAMWeights:
 
 # ── Standard Errors & Confidence Intervals ───────────────────────────────────
 
+
 class TestInference:
     def _fit_model(self, n=80):
         from pymgcv.api.gam import GAM
+
         rng = np.random.default_rng(42)
-        df = pd.DataFrame({
-            'x': rng.normal(size=n),
-            'y': rng.normal(size=n)
-        })
-        model = GAM('y ~ s(x, k=8)', data=df, family='gaussian')
+        df = pd.DataFrame({"x": rng.normal(size=n), "y": rng.normal(size=n)})
+        model = GAM("y ~ s(x, k=8)", data=df, family="gaussian")
         model.fit(max_outer_iter=5, max_inner_iter=10, use_gpu=False)
         return model
 

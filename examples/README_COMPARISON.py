@@ -12,9 +12,10 @@ This document provides:
 import sys
 from pathlib import Path
 
+
 def print_status_report():
     """Print full implementation status."""
-    
+
     report = """
 ╔════════════════════════════════════════════════════════════════════════════════╗
 ║                    PYMGCV IMPLEMENTATION STATUS REPORT                         ║
@@ -306,22 +307,23 @@ REFERENCES
    Nonparametric Regression and Generalized Linear Models
 
 """
-    
+
     print(report)
-    
+
     # Print current test status if possible
     print("\n" + "=" * 80)
     print("RUNNING CURRENT TESTS...")
     print("=" * 80 + "\n")
-    
+
     try:
         import subprocess
+
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=no", "-q"],
             cwd=Path(__file__).parent.parent,
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=120,
         )
         print(result.stdout)
         if result.stderr:
@@ -330,5 +332,5 @@ REFERENCES
         print(f"Could not run tests: {e}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print_status_report()

@@ -24,18 +24,17 @@ The public API mirrors R's gamm():
     print(model.summary())
 
 References:
-    - Wood, S.N. (2004). Parametrizing smooth functions in mixed models.  
+    - Wood, S.N. (2004). Parametrizing smooth functions in mixed models.
       JRSS-C, 53(4), 549-562.
     - Pinheiro, J. & Bates, D. (2000). Mixed-effects models in S and S-PLUS.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy import linalg
 
 from pymgcv.api.gam import GAM
 
@@ -60,11 +59,11 @@ class GAMM(GAM):
     def __init__(
         self,
         formula: str,
-        data: Optional[pd.DataFrame] = None,
-        family: str = 'gaussian',
-        random: Optional[dict] = None,
-        offset: Optional[str] = None,
-        weights: Optional[Any] = None,
+        data: pd.DataFrame | None = None,
+        family: str = "gaussian",
+        random: dict | None = None,
+        offset: str | None = None,
+        weights: Any | None = None,
     ) -> None:
         """Initialize GAMM.
 
@@ -85,12 +84,12 @@ class GAMM(GAM):
 
     def fit(
         self,
-        data: Optional[pd.DataFrame] = None,
+        data: pd.DataFrame | None = None,
         max_outer_iter: int = 20,
         max_inner_iter: int = 25,
         verbose: bool = False,
         use_gpu: bool = False,
-    ) -> 'GAMM':
+    ) -> GAMM:
         """Fit GAMM via mixed model representation.
 
         For Gaussian family: converts smooth terms to random effects and
@@ -114,15 +113,15 @@ class GAMM(GAM):
         if data is not None:
             self.data = data
         elif self.data is None:
-            raise ValueError('Data must be provided.')
-
-        from pymgcv.distributions.family_base import GaussianFamily
+            raise ValueError("Data must be provided.")
 
         # Stage 1: standard GAM fit to initialize and get basis/penalty info
-        super().fit(data=self.data if data is None else data,
-                    max_outer_iter=max_outer_iter,
-                    max_inner_iter=max_inner_iter,
-                    verbose=verbose)
+        super().fit(
+            data=self.data if data is None else data,
+            max_outer_iter=max_outer_iter,
+            max_inner_iter=max_inner_iter,
+            verbose=verbose,
+        )
 
         # Stage 2: incorporate additional random effects from self.random
         if self.random:
@@ -155,13 +154,13 @@ class GAMM(GAM):
         for group_var, formula in self.random.items():
             if group_var not in self.data.columns:
                 if verbose:
-                    print(f'Warning: random effect group variable {group_var!r} not in data')
+                    print(f"Warning: random effect group variable {group_var!r} not in data")
                 continue
 
             group = pd.Categorical(self.data[group_var])
             n_levels = len(group.categories)
 
-            if '~1' in formula.replace(' ', ''):
+            if "~1" in formula.replace(" ", ""):
                 # Random intercepts: one indicator per level
                 Z_g = np.zeros((n, n_levels))
                 for li, lv in enumerate(group.categories):
@@ -193,7 +192,7 @@ class GAMM(GAM):
             # Place penalty matrix in the random-effect block
             start = p_aug - n_re
             end = p_aug
-            cols_start = start + sum(q.shape[1] for q in extra_cols[:extra_penalties.index(pen)])
+            cols_start = start + sum(q.shape[1] for q in extra_cols[: extra_penalties.index(pen)])
             cols_end = cols_start + pen.shape[0]
             S_full[cols_start:cols_end, cols_start:cols_end] = pen / initial_sigma2
             S_aug.append(S_full)
@@ -209,13 +208,16 @@ class GAMM(GAM):
         weights = np.ones(n)
 
         solver = PIRLSSolver(
-            X_aug, y, self.family, S_aug,
+            X_aug,
+            y,
+            self.family,
+            S_aug,
             lambda_vec=np.ones(len(S_aug)),
             offset=offset,
             dispersion=self.dispersion_,
             weights=weights,
         )
-        beta_aug = solver.solve(max_iter=max_inner_iter if hasattr(self, '_max_inner') else 25)
+        beta_aug = solver.solve(max_iter=max_inner_iter if hasattr(self, "_max_inner") else 25)
 
         self.beta = beta_aug[:p]
         self._X_fit = X_aug
@@ -226,7 +228,7 @@ class GAMM(GAM):
         for group_var, formula in self.random.items():
             group = pd.Categorical(self.data[group_var])
             n_levels = len(group.categories)
-            re_vec = beta_aug[re_start:re_start + n_levels]
+            re_vec = beta_aug[re_start : re_start + n_levels]
             self.random_effects[group_var] = dict(zip(group.categories, re_vec))
             re_start += n_levels
 
@@ -238,7 +240,7 @@ class GAMM(GAM):
         # Simple moment estimator: σ²_j ≈ φ / λ_j for smooth terms
         if self.smoothing_parameters is not None:
             for j, lam_j in enumerate(self.smoothing_parameters):
-                self.var_components[f'smooth_{j}'] = float(self.dispersion_ / max(lam_j, 1e-10))
+                self.var_components[f"smooth_{j}"] = float(self.dispersion_ / max(lam_j, 1e-10))
 
     def ranef(self) -> dict:
         """Return estimated random effects.
@@ -255,30 +257,30 @@ class GAMM(GAM):
         if not self.random_effects and not self.var_components:
             return base
 
-        lines = [base, '', 'Random effects variance components:']
+        lines = [base, "", "Random effects variance components:"]
         for name, var in self.var_components.items():
-            lines.append(f'  {name}: σ² = {var:.6f}  (sd = {var**0.5:.6f})')
+            lines.append(f"  {name}: σ² = {var:.6f}  (sd = {var**0.5:.6f})")
 
         if self.random_effects:
-            lines.append('')
-            lines.append('Random effects (first few):')
+            lines.append("")
+            lines.append("Random effects (first few):")
             for group_var, levels in self.random_effects.items():
                 first_few = list(levels.items())[:5]
                 for lv, v in first_few:
-                    lines.append(f'  {group_var}[{lv}]: {v:.6f}')
+                    lines.append(f"  {group_var}[{lv}]: {v:.6f}")
                 if len(levels) > 5:
-                    lines.append(f'  ... ({len(levels)} levels total)')
+                    lines.append(f"  ... ({len(levels)} levels total)")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 def gamm(
     formula: str,
     data: pd.DataFrame,
-    family: str = 'gaussian',
-    random: Optional[dict] = None,
-    offset: Optional[str] = None,
-    weights: Optional[Any] = None,
+    family: str = "gaussian",
+    random: dict | None = None,
+    offset: str | None = None,
+    weights: Any | None = None,
     **kwargs,
 ) -> GAMM:
     """Fit a Generalized Additive Mixed Model (gamm).
@@ -303,8 +305,12 @@ def gamm(
         >>> print(model.ranef())
     """
     model = GAMM(
-        formula=formula, data=data, family=family,
-        random=random, offset=offset, weights=weights,
+        formula=formula,
+        data=data,
+        family=family,
+        random=random,
+        offset=offset,
+        weights=weights,
     )
     model.fit(**kwargs)
     return model

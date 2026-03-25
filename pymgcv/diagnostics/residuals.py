@@ -9,8 +9,6 @@ Computes:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from scipy import stats
 
@@ -22,7 +20,7 @@ def compute_residuals(
     y: np.ndarray,
     mu: np.ndarray,
     family: Family | None = None,
-    type: str = 'deviance',
+    type: str = "deviance",
 ) -> np.ndarray:
     """Compute residuals.
 
@@ -39,11 +37,11 @@ def compute_residuals(
         - McCullagh & Nelder (1989): Generalized Linear Models
         - Wood (2017): Generalized Additive Models
     """
-    if type == 'response':
+    if type == "response":
         # Observed - Fitted
         return y - mu
 
-    elif type == 'pearson':
+    elif type == "pearson":
         # (y - μ) / √Var(Y)
         if family is None:
             variance = mu
@@ -51,11 +49,11 @@ def compute_residuals(
             variance = family.variance(mu)
         return (y - mu) / np.sqrt(variance + 1e-10)
 
-    elif type == 'deviance':
+    elif type == "deviance":
         # ±√(2*(logL(y) - logL(μ)))
         if family is None:
             # Fallback for Gaussian
-            return (y - mu)
+            return y - mu
         else:
             # Deviance residuals
             sign = np.sign(y - mu)
@@ -64,14 +62,14 @@ def compute_residuals(
             deviance = 2 * (loglik_sat - loglik_fitted)
             return sign * np.sqrt(np.abs(deviance))
 
-    elif type == 'standardized':
+    elif type == "standardized":
         # Pearson residuals divided by √(1 - hat_diag)
-        pearson = compute_residuals(y, mu, family, type='pearson')
+        pearson = compute_residuals(y, mu, family, type="pearson")
         # Approximation: use (1 - 0.5) as crude leverage estimate
         return pearson / np.sqrt(0.5 + 1e-10)
 
     else:
-        raise ValueError(f'Unknown residual type: {type}')
+        raise ValueError(f"Unknown residual type: {type}")
 
 
 class ResidualDiagnostics:
@@ -91,18 +89,18 @@ class ResidualDiagnostics:
             model: Fitted GAM model.
         """
         if not model.fitted:
-            raise RuntimeError('Model not fitted')
+            raise RuntimeError("Model not fitted")
 
         self.model = model
-        self.y = model.data[model.formula.split('~')[0].strip()].values
-        self.fitted = model.predict(model.data, scale='response')
+        self.y = model.data[model.formula.split("~")[0].strip()].values
+        self.fitted = model.predict(model.data, scale="response")
 
         # Compute different residual types
         self.residuals = {
-            'response': compute_residuals(self.y, self.fitted, model.family, 'response'),
-            'pearson': compute_residuals(self.y, self.fitted, model.family, 'pearson'),
-            'deviance': compute_residuals(self.y, self.fitted, model.family, 'deviance'),
-            'standardized': compute_residuals(self.y, self.fitted, model.family, 'standardized'),
+            "response": compute_residuals(self.y, self.fitted, model.family, "response"),
+            "pearson": compute_residuals(self.y, self.fitted, model.family, "pearson"),
+            "deviance": compute_residuals(self.y, self.fitted, model.family, "deviance"),
+            "standardized": compute_residuals(self.y, self.fitted, model.family, "standardized"),
         }
 
     def summary(self) -> str:
@@ -112,25 +110,25 @@ class ResidualDiagnostics:
             String with residual statistics.
         """
         lines = [
-            'Residual Diagnostics',
-            '====================',
+            "Residual Diagnostics",
+            "====================",
         ]
 
         for res_type, res_vals in self.residuals.items():
-            lines.append(f'\n{res_type.capitalize()} Residuals:')
-            lines.append(f'  Min: {np.min(res_vals):.6f}')
-            lines.append(f'  Q1:  {np.percentile(res_vals, 25):.6f}')
-            lines.append(f'  Med: {np.median(res_vals):.6f}')
-            lines.append(f'  Q3:  {np.percentile(res_vals, 75):.6f}')
-            lines.append(f'  Max: {np.max(res_vals):.6f}')
+            lines.append(f"\n{res_type.capitalize()} Residuals:")
+            lines.append(f"  Min: {np.min(res_vals):.6f}")
+            lines.append(f"  Q1:  {np.percentile(res_vals, 25):.6f}")
+            lines.append(f"  Med: {np.median(res_vals):.6f}")
+            lines.append(f"  Q3:  {np.percentile(res_vals, 75):.6f}")
+            lines.append(f"  Max: {np.max(res_vals):.6f}")
 
             # Normality test
-            stat, pval = stats.shapiro(res_vals[:min(5000, len(res_vals))])
-            lines.append(f'  Shapiro-Wilk p-value: {pval:.6f}')
+            stat, pval = stats.shapiro(res_vals[: min(5000, len(res_vals))])
+            lines.append(f"  Shapiro-Wilk p-value: {pval:.6f}")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
-    def get_residuals(self, type: str = 'deviance') -> np.ndarray:
+    def get_residuals(self, type: str = "deviance") -> np.ndarray:
         """Get residuals of specific type.
 
         Args:
@@ -139,9 +137,9 @@ class ResidualDiagnostics:
         Returns:
             Residuals array.
         """
-        return self.residuals.get(type, self.residuals['deviance'])
+        return self.residuals.get(type, self.residuals["deviance"])
 
-    def qq_plot_data(self, type: str = 'deviance') -> tuple:
+    def qq_plot_data(self, type: str = "deviance") -> tuple:
         """Get Q-Q plot data.
 
         Args:
@@ -151,13 +149,11 @@ class ResidualDiagnostics:
             (theoretical_quantiles, sample_quantiles) tuple.
         """
         residuals = self.get_residuals(type)
-        theoretical = stats.norm.ppf(
-            np.linspace(0, 1, len(residuals) + 2)[1:-1]
-        )
+        theoretical = stats.norm.ppf(np.linspace(0, 1, len(residuals) + 2)[1:-1])
         sample = np.sort(residuals)
         return theoretical, sample
 
-    def scale_location_data(self, type: str = 'pearson') -> tuple:
+    def scale_location_data(self, type: str = "pearson") -> tuple:
         """Get scale-location plot data.
 
         Args:

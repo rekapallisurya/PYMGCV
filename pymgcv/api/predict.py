@@ -9,8 +9,6 @@ Provides prediction at new data points with:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 import numpy as np
 import pandas as pd
 
@@ -20,9 +18,9 @@ from pymgcv.api.gam import GAM
 def predict(
     model: GAM,
     data: pd.DataFrame | None = None,
-    scale: str = 'response',
+    scale: str = "response",
     se: bool = False,
-) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Predict at new data points.
 
     Args:
@@ -40,7 +38,7 @@ def predict(
         >>> y_pred, y_se = predict(model, new_data, se=True)
     """
     if not model.fitted:
-        raise RuntimeError('Model not fitted')
+        raise RuntimeError("Model not fitted")
 
     if data is None:
         data = model.data
@@ -57,7 +55,7 @@ def predict(
 def compute_se(
     model: GAM,
     data: pd.DataFrame,
-    scale: str = 'response',
+    scale: str = "response",
 ) -> np.ndarray:
     """Compute prediction standard errors.
 
@@ -76,6 +74,7 @@ def compute_se(
     try:
         # Design matrix for new data
         from pymgcv.utils.model_matrix import ModelMatrix
+
         mm = ModelMatrix(data, model.formula)
         X_new = mm.X
 
@@ -86,15 +85,15 @@ def compute_se(
         # Var(ŷ) = X_new Var(β) X_new'
         var_eta = np.array([X_new[i, :] @ XtX_inv @ X_new[i, :] for i in range(n)])
 
-        if scale == 'link':
+        if scale == "link":
             se = np.sqrt(var_eta)
-        elif scale == 'response':
+        elif scale == "response":
             # Delta method: Var(g^-1(η)) ≈ (dg^-1/dη)^2 Var(η)
             eta = X_new @ model.beta
             dmu_deta = model.family.dmu_deta(eta)
             se = np.abs(dmu_deta) * np.sqrt(var_eta)
         else:
-            raise ValueError(f'Unknown scale: {scale}')
+            raise ValueError(f"Unknown scale: {scale}")
 
         return se
     except Exception as e:
@@ -107,7 +106,7 @@ def partial_dependence(
     var_name: str,
     percentiles: np.ndarray | None = None,
     n_grid: int = 100,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Compute partial dependence of smooth term on response.
 
     Marginalizes over other variables by averaging predictions.
@@ -122,13 +121,13 @@ def partial_dependence(
         (x_grid, pd_values) tuple of arrays.
     """
     if not model.fitted:
-        raise RuntimeError('Model not fitted')
+        raise RuntimeError("Model not fitted")
 
     data = model.data
 
     # Get variable values
     if var_name not in data.columns:
-        raise ValueError(f'{var_name} not in data')
+        raise ValueError(f"{var_name} not in data")
 
     x_vals = data[var_name].values
     x_min, x_max = np.percentile(x_vals, [1, 99])
@@ -143,7 +142,7 @@ def partial_dependence(
         data_grid[var_name] = x_val
 
         # Predict
-        pred = model.predict(data_grid, scale='response')
+        pred = model.predict(data_grid, scale="response")
         pd_vals[i] = np.mean(pred)
 
     return x_grid, pd_vals
@@ -166,7 +165,7 @@ class Predictor:
             model: Fitted GAM model.
         """
         if not model.fitted:
-            raise RuntimeError('Model not fitted')
+            raise RuntimeError("Model not fitted")
         self.model = model
         self.data = model.data
         self.predictions = None
@@ -175,7 +174,7 @@ class Predictor:
     def predict(
         self,
         new_data: pd.DataFrame | None = None,
-        scale: str = 'response',
+        scale: str = "response",
         ci: float = 0.95,
     ) -> pd.DataFrame:
         """Make predictions with confidence intervals.
@@ -200,12 +199,14 @@ class Predictor:
         upr = pred + z_alpha * se_vals
 
         # Return as DataFrame
-        result = pd.DataFrame({
-            'fit': pred,
-            'se': se_vals,
-            'lwr': lwr,
-            'upr': upr,
-        })
+        result = pd.DataFrame(
+            {
+                "fit": pred,
+                "se": se_vals,
+                "lwr": lwr,
+                "upr": upr,
+            }
+        )
 
         return result
 
@@ -213,7 +214,7 @@ class Predictor:
         self,
         var_name: str,
         n_grid: int = 100,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Get partial dependence for variable.
 
         Args:

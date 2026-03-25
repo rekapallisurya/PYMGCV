@@ -46,37 +46,43 @@ __version__ = "0.1.0"
 __author__ = "Surya"
 
 # API entry points
-from pymgcv.api import gam, gam_auto, predict, summary
-from pymgcv.api.gam import GAM
-from pymgcv.api.bam import BAM, bam
-from pymgcv.api.gamm import GAMM, gamm
-from pymgcv.api.model_comparison import anova_gam, compare_models, aic, bic
-from pymgcv.api.gam_check import gam_check, k_check
-from pymgcv.api.plot import plot_smooth, plot_smooth_2d, plot_residuals, plot_diagnostics, plot_gam
-from pymgcv.distributions.family_base import TweedieFamily as _TweedieFamily
 from pymgcv import config
+from pymgcv.api import gam, gam_auto, predict, summary
+from pymgcv.api.bam import BAM, bam
+from pymgcv.api.gam import GAM
+from pymgcv.api.gam_check import gam_check, k_check
+from pymgcv.api.gamm import GAMM, gamm
+from pymgcv.api.model_comparison import aic, anova_gam, bic, compare_models
+from pymgcv.api.plot import plot_diagnostics, plot_gam, plot_residuals, plot_smooth, plot_smooth_2d
+from pymgcv.distributions.family_base import TweedieFamily as _TweedieFamily
 
 
-def s(*variables: str, k: int | None = None, bs: str = 'tp',
-      by: str | None = None, fx: bool = False, m: int | None = None) -> str:
+def s(
+    *variables: str,
+    k: int | None = None,
+    bs: str = "tp",
+    by: str | None = None,
+    fx: bool = False,
+    m: int | None = None,
+) -> str:
     """Return a smooth-term string for use inside a GAM formula.
 
     Example::
 
         GAM(f"y ~ {s('x1')} + {s('x2', k=10, bs='cr')}", data=df)
     """
-    args = ', '.join(variables)
-    if bs != 'tp':
+    args = ", ".join(variables)
+    if bs != "tp":
         args += f", bs='{bs}'"
     if k is not None:
-        args += f', k={k}'
+        args += f", k={k}"
     if by is not None:
-        args += f', by={by}'
+        args += f", by={by}"
     if fx:
-        args += ', fx=True'
+        args += ", fx=True"
     if m is not None:
-        args += f', m={m}'
-    return f's({args})'
+        args += f", m={m}"
+    return f"s({args})"
 
 
 class Tweedie(_TweedieFamily):
@@ -98,12 +104,16 @@ class Tweedie(_TweedieFamily):
         GAM("y ~ s(x)", family=Tweedie(estimate_power=True), ...)  # estimate p like tw()
     """
 
-    def __init__(self, p: float = 1.5, power: float | None = None,
-                 link: str = 'log', estimate_power: bool = False) -> None:
-        if link != 'log':
+    def __init__(
+        self,
+        p: float = 1.5,
+        power: float | None = None,
+        link: str = "log",
+        estimate_power: bool = False,
+    ) -> None:
+        if link != "log":
             raise ValueError(f"Tweedie only supports link='log', got '{link}'")
-        super().__init__(power=power if power is not None else p,
-                         estimate_power=estimate_power)
+        super().__init__(power=power if power is not None else p, estimate_power=estimate_power)
 
 
 __all__ = [
@@ -138,4 +148,3 @@ __all__ = [
     "predict",
     "summary",
 ]
-

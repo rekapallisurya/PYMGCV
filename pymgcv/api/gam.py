@@ -13,7 +13,7 @@ Example:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -38,17 +38,17 @@ class GAM:
     def __init__(
         self,
         formula: str,
-        data: Optional[pd.DataFrame] = None,
-        family: str = 'gaussian',
-        offset: Optional[str] = None,
-        weights: Optional[Any] = None,
-        sp: Optional[Any] = None,
+        data: pd.DataFrame | None = None,
+        family: str = "gaussian",
+        offset: str | None = None,
+        weights: Any | None = None,
+        sp: Any | None = None,
         select: bool = False,
-        method: str = 'REML',
-        knots: Optional[dict] = None,
+        method: str = "REML",
+        knots: dict | None = None,
         gamma: float = 1.0,
         drop_intercept: bool = False,
-        control: Optional[dict] = None,
+        control: dict | None = None,
     ) -> None:
         """Initialize GAM.
 
@@ -98,23 +98,23 @@ class GAM:
         self.magic_optimizer = None
 
         self.fitted = False
-        self.beta: Optional[np.ndarray] = None
-        self.smoothing_parameters: Optional[np.ndarray] = None
-        self.edf: Optional[float] = None
-        self.edf_per_smooth: Optional[dict] = None
-        self.dispersion_: float = 1.0      # estimated dispersion φ
-        self._S_combined: Optional[np.ndarray] = None  # for inference
-        self._X_fit: Optional[np.ndarray] = None       # training design matrix
-        self._y_fit: Optional[np.ndarray] = None       # training response
+        self.beta: np.ndarray | None = None
+        self.smoothing_parameters: np.ndarray | None = None
+        self.edf: float | None = None
+        self.edf_per_smooth: dict | None = None
+        self.dispersion_: float = 1.0  # estimated dispersion φ
+        self._S_combined: np.ndarray | None = None  # for inference
+        self._X_fit: np.ndarray | None = None  # training design matrix
+        self._y_fit: np.ndarray | None = None  # training response
 
     def fit(
         self,
-        data: Optional[pd.DataFrame] = None,
+        data: pd.DataFrame | None = None,
         max_outer_iter: int = 200,
         max_inner_iter: int = 25,
         verbose: bool = False,
         use_gpu: bool = True,
-    ) -> 'GAM':
+    ) -> GAM:
         """Fit the GAM model.
 
         Args:
@@ -130,26 +130,33 @@ class GAM:
         if data is not None:
             self.data = data
         elif self.data is None:
-            raise ValueError('Data must be provided either in __init__ or fit()')
+            raise ValueError("Data must be provided either in __init__ or fit()")
 
-        from pymgcv.utils.formula_parser import FormulaParser
-        from pymgcv.utils.model_matrix import ModelMatrix
-        from pymgcv.penalties.penalty_matrix import PenaltyMatrix
         from pymgcv.distributions.family_base import (
-            GaussianFamily, PoissonFamily, GammaFamily, TweedieFamily,
-            BinomialFamily, NegativeBinomialFamily, InverseGaussianFamily,
-            BetaFamily, GaulssFamily,
+            BetaFamily,
+            BinomialFamily,
+            GammaFamily,
+            GaulssFamily,
+            GaussianFamily,
+            InverseGaussianFamily,
+            NegativeBinomialFamily,
+            PoissonFamily,
+            TweedieFamily,
         )
-        from pymgcv.optimizer.magic_optimizer import MAGICOptimizer
         from pymgcv.optimizer.edf import EDFComputer
         from pymgcv.optimizer.jax_acceleration import device_info
+        from pymgcv.optimizer.magic_optimizer import MAGICOptimizer
+        from pymgcv.penalties.penalty_matrix import PenaltyMatrix
+        from pymgcv.utils.formula_parser import FormulaParser
+        from pymgcv.utils.model_matrix import ModelMatrix
 
         # 1. Parse formula
         parser = FormulaParser(self.formula)
 
         # 2. Construct design matrix
         self.model_matrix = ModelMatrix(
-            self.data, self.formula,
+            self.data,
+            self.formula,
             knots=self.knots,
             drop_intercept=self.drop_intercept,
         )
@@ -164,19 +171,20 @@ class GAM:
 
         # 4. Set up family
         family_map = {
-            'gaussian': GaussianFamily(),
-            'poisson': PoissonFamily(),
-            'binomial': BinomialFamily(),
-            'gamma': GammaFamily(shape=1.0),
-            'tweedie': TweedieFamily(power=1.5),
-            'negative.binomial': NegativeBinomialFamily(theta=1.0),
-            'nb': NegativeBinomialFamily(theta=1.0),
-            'inverse.gaussian': InverseGaussianFamily(),
-            'beta': BetaFamily(),
-            'betar': BetaFamily(),
-            'gaulss': GaulssFamily(),
+            "gaussian": GaussianFamily(),
+            "poisson": PoissonFamily(),
+            "binomial": BinomialFamily(),
+            "gamma": GammaFamily(shape=1.0),
+            "tweedie": TweedieFamily(power=1.5),
+            "negative.binomial": NegativeBinomialFamily(theta=1.0),
+            "nb": NegativeBinomialFamily(theta=1.0),
+            "inverse.gaussian": InverseGaussianFamily(),
+            "beta": BetaFamily(),
+            "betar": BetaFamily(),
+            "gaulss": GaulssFamily(),
         }
         from pymgcv.distributions.family_base import Family as _Family
+
         if isinstance(self.family_name, _Family):
             self.family = self.family_name
         else:
@@ -203,14 +211,14 @@ class GAM:
             basis_obj = self.model_matrix.smooth_bases[j]
 
             # Tensor product smooths have multiple (Kronecker-sum) penalties
-            if hasattr(basis_obj, 'penalty_matrices'):
+            if hasattr(basis_obj, "penalty_matrices"):
                 for P_small in basis_obj.penalty_matrices():
                     P_embed = np.zeros((p_total, p_total))
                     P_embed[s_start:s_stop, s_start:s_stop] = P_small
                     S_list.append(P_embed)
                     smooth_starts.append(s_start)
                     smooth_sizes.append(actual_basis_dim)
-            elif hasattr(basis_obj, 'S') and basis_obj.S is not None:
+            elif hasattr(basis_obj, "S") and basis_obj.S is not None:
                 # ThinPlateSpline, random effect, cyclic spline: use .S directly
                 P_embed = np.zeros((p_total, p_total))
                 S_obj = basis_obj.S
@@ -222,23 +230,27 @@ class GAM:
                     n_levels = actual_basis_dim // k_per
                     for lev in range(n_levels):
                         off = s_start + lev * k_per
-                        P_embed[off:off+k_per, off:off+k_per] = S_obj
+                        P_embed[off : off + k_per, off : off + k_per] = S_obj
                 else:
-                    P_embed[s_start:s_stop, s_start:s_stop] = S_obj[:actual_basis_dim, :actual_basis_dim]
+                    P_embed[s_start:s_stop, s_start:s_stop] = S_obj[
+                        :actual_basis_dim, :actual_basis_dim
+                    ]
                 S_list.append(P_embed)
                 smooth_starts.append(s_start)
                 smooth_sizes.append(actual_basis_dim)
-            elif hasattr(basis_obj, 'penalty_matrix_S'):
+            elif hasattr(basis_obj, "penalty_matrix_S"):
                 # Alternate accessor (e.g. ThinPlateSpline)
                 P_embed = np.zeros((p_total, p_total))
                 S_obj = basis_obj.penalty_matrix_S()
-                P_embed[s_start:s_stop, s_start:s_stop] = S_obj[:actual_basis_dim, :actual_basis_dim]
+                P_embed[s_start:s_stop, s_start:s_stop] = S_obj[
+                    :actual_basis_dim, :actual_basis_dim
+                ]
                 S_list.append(P_embed)
                 smooth_starts.append(s_start)
                 smooth_sizes.append(actual_basis_dim)
             else:
                 # Default: second-difference TPRS penalty
-                penalty_builder = PenaltyMatrix(basis_dim=actual_basis_dim, penalty_type='tprs')
+                penalty_builder = PenaltyMatrix(basis_dim=actual_basis_dim, penalty_type="tprs")
                 P_embed = np.zeros((p_total, p_total))
                 P_embed[s_start:s_stop, s_start:s_stop] = penalty_builder.S
                 S_list.append(P_embed)
@@ -263,42 +275,51 @@ class GAM:
 
         # 6. Optimize smoothing parameters or use fixed sp=
         # Extract control parameters
-        ctrl_maxit = int(self.control.get('maxit', max_outer_iter))
-        ctrl_inner = int(self.control.get('inner_maxit', max_inner_iter))
-        ctrl_tol   = float(self.control.get('epsilon', 1e-5))
-        ctrl_verbose = bool(self.control.get('trace', verbose))
+        ctrl_maxit = int(self.control.get("maxit", max_outer_iter))
+        ctrl_inner = int(self.control.get("inner_maxit", max_inner_iter))
+        ctrl_tol = float(self.control.get("epsilon", 1e-5))
+        ctrl_verbose = bool(self.control.get("trace", verbose))
         initial_dispersion = 1.0
 
         optimizer = MAGICOptimizer(
-            X=X, y=y, family=self.family, S_list=S_list,
+            X=X,
+            y=y,
+            family=self.family,
+            S_list=S_list,
             smooth_starts=smooth_starts,
             smooth_sizes=smooth_sizes,
-            offset=offset, dispersion=initial_dispersion
+            offset=offset,
+            dispersion=initial_dispersion,
         )
         optimizer.weights = weights if not np.all(weights == 1.0) else None
 
         if self.sp is not None:
             # Fixed smoothing parameters: run a single PIRLS pass, skip MAGIC
             from pymgcv.optimizer.pirls import PIRLSSolver
+
             sp_arr = np.asarray(self.sp, dtype=np.float64)
             if len(sp_arr) < len(S_list):
                 # Pad with zeros for any select-added penalties
                 sp_arr = np.concatenate([sp_arr, np.zeros(len(S_list) - len(sp_arr))])
             pirls = PIRLSSolver(
-                X=X, y=y, family=self.family,
-                S_list=S_list, lambda_vec=sp_arr,
-                offset=offset, dispersion=initial_dispersion,
+                X=X,
+                y=y,
+                family=self.family,
+                S_list=S_list,
+                lambda_vec=sp_arr,
+                offset=offset,
+                dispersion=initial_dispersion,
                 weights=optimizer.weights,
             )
             pirls.solve(max_iter=ctrl_inner, verbose=ctrl_verbose)
-            result = {'coef': pirls.beta, 'smooth_lambda': sp_arr}
+            result = {"coef": pirls.beta, "smooth_lambda": sp_arr}
         else:
             result = optimizer.optimize(
                 max_outer_iter=ctrl_maxit,
                 max_inner_iter=ctrl_inner,
                 outer_tol=ctrl_tol,
                 verbose=ctrl_verbose,
-                use_jax=use_gpu and device_info()['available'],
+                use_jax=use_gpu and device_info()["available"],
                 method=self.method.lower(),
                 # Cap γ at 1.0 for REML optimisation: the pseudo-Gaussian criterion
                 # is bounded below (λ→∞ stable) only at γ≤1 because logdet_A and
@@ -308,8 +329,8 @@ class GAM:
                 gamma=min(float(self.gamma), 1.0),
             )
 
-        self.beta = result['coef']
-        self.smoothing_parameters = result['smooth_lambda']
+        self.beta = result["coef"]
+        self.smoothing_parameters = result["smooth_lambda"]
 
         # 7. Compute EDF
         S_combined = np.zeros((p_total, p_total))
@@ -324,16 +345,18 @@ class GAM:
         #     V(mu) without phi in PIRLS weights and profiles phi out of REML
         #     analytically.  A second pass at estimated phi would bake phi into
         #     the IRLS weights, distorting the penalty balance (Sλ → φSλ).
-        from pymgcv.distributions.family_base import GaussianFamily as _GF, PoissonFamily as _PF
 
         # 7c. Tweedie power estimation — mirrors R's tw() profile-REML approach.
         #     If estimate_power=True we search over p ∈ (1,2) for the p that
         #     minimises the REML score at convergence, updating φ and λ self-
         #     consistently.  3 outer EM steps are usually enough.
         from pymgcv.distributions.family_base import TweedieFamily as _TwFam
-        if (isinstance(self.family, _TwFam) and
-                getattr(self.family, 'estimate_power', False) and
-                self.sp is None):
+
+        if (
+            isinstance(self.family, _TwFam)
+            and getattr(self.family, "estimate_power", False)
+            and self.sp is None
+        ):
             from scipy import optimize as _spopt
 
             def _profile_reml_at_p(p_val: float) -> float:
@@ -349,9 +372,14 @@ class GAM:
                 fam_p = _TwFam(power=p_val)
 
                 opt1 = MAGICOptimizer(
-                    X=X, y=y, family=fam_p, S_list=S_list,
-                    smooth_starts=smooth_starts, smooth_sizes=smooth_sizes,
-                    offset=offset, dispersion=1.0,
+                    X=X,
+                    y=y,
+                    family=fam_p,
+                    S_list=S_list,
+                    smooth_starts=smooth_starts,
+                    smooth_sizes=smooth_sizes,
+                    offset=offset,
+                    dispersion=1.0,
                 )
                 opt1.lambda_log = np.log(np.maximum(self.smoothing_parameters, 1e-10)).copy()
                 opt1.lambda_vec = self.smoothing_parameters.copy()
@@ -364,7 +392,7 @@ class GAM:
                     gamma=min(float(self.gamma), 1.0),
                 )
 
-                beta_p = r1['coef']
+                beta_p = r1["coef"]
                 lam_p = opt1.lambda_vec
                 eta_p = X @ beta_p
                 if offset is not None:
@@ -374,7 +402,7 @@ class GAM:
                 # φ̂ from Pearson residuals
                 var1 = np.maximum(fam_p.variance(mu_p, 1.0), 1e-10)
                 pearson = float(np.sum((y - mu_p) ** 2 / var1))
-                edf_p = r1['edf']
+                edf_p = r1["edf"]
                 phi_est = max(pearson / max(len(y) - edf_p, 1.0), 1e-6)
 
                 # Full Tweedie log-likelihood (includes Wright function)
@@ -383,7 +411,7 @@ class GAM:
                 # Penalised Hessian log-determinant: log|X'WX + S_λ|
                 S_lam = sum(l * S for l, S in zip(lam_p, S_list))
                 dmu = fam_p.dmu_deta(eta_p)
-                w = (dmu ** 2) / var1
+                w = (dmu**2) / var1
                 XtWX = X.T @ (X * w[:, np.newaxis])
                 A = XtWX + S_lam + 1e-7 * np.eye(X.shape[1])
                 sign, logdet_A = np.linalg.slogdet(A)
@@ -392,39 +420,53 @@ class GAM:
 
                 # log|S+|
                 from pymgcv.optimizer.reml_objective import REMLObjective
+
                 reml_obj = REMLObjective(
-                    X, y, fam_p, S_list,
+                    X,
+                    y,
+                    fam_p,
+                    S_list,
                     smooth_starts=smooth_starts,
                     smooth_sizes=smooth_sizes,
-                    offset=offset, dispersion=1.0,
+                    offset=offset,
+                    dispersion=1.0,
                 )
                 log_S_plus = reml_obj._penalty_log_determinant(lam_p)
                 penalty = float(beta_p @ S_lam @ beta_p)
 
                 # Full Laplace REML:
                 #   -2ℓ(β̂,φ̂;p) + β̂'Sβ̂/φ̂ + log|X'WX+S| - p·log(φ̂) - log|S+|
-                reml_full = (-2.0 * ll_full + penalty / phi_est
-                             + logdet_A - p_dim * np.log(phi_est)
-                             - log_S_plus)
+                reml_full = (
+                    -2.0 * ll_full
+                    + penalty / phi_est
+                    + logdet_A
+                    - p_dim * np.log(phi_est)
+                    - log_S_plus
+                )
                 return float(reml_full) if np.isfinite(reml_full) else 1e30
 
             p_result = _spopt.minimize_scalar(
                 _profile_reml_at_p,
                 bounds=(1.01, 1.99),
-                method='bounded',
-                options={'xatol': 1e-4},
+                method="bounded",
+                options={"xatol": 1e-4},
             )
             best_p = float(np.clip(p_result.x, 1.01, 1.99))
             if verbose:
-                print(f'  Tweedie power estimated: p = {best_p:.4f}')
+                print(f"  Tweedie power estimated: p = {best_p:.4f}")
 
             # Refit at optimal p (phi=1: profiled out of REML)
             self.family = _TwFam(power=best_p)
             self.family.estimate_power = True  # preserve flag on the fitted object
             opt_p_final = MAGICOptimizer(
-                X=X, y=y, family=self.family, S_list=S_list,
-                smooth_starts=smooth_starts, smooth_sizes=smooth_sizes,
-                offset=offset, dispersion=1.0,
+                X=X,
+                y=y,
+                family=self.family,
+                S_list=S_list,
+                smooth_starts=smooth_starts,
+                smooth_sizes=smooth_sizes,
+                offset=offset,
+                dispersion=1.0,
             )
             opt_p_final.weights = optimizer.weights
             opt_p_final.lambda_log = np.log(np.maximum(self.smoothing_parameters, 1e-10))
@@ -437,8 +479,8 @@ class GAM:
                 method=self.method.lower(),
                 gamma=min(float(self.gamma), 1.0),
             )
-            self.beta = result_p['coef']
-            self.smoothing_parameters = result_p['smooth_lambda']
+            self.beta = result_p["coef"]
+            self.smoothing_parameters = result_p["smooth_lambda"]
 
             # Rebuild S_combined with p-optimised λ
             S_combined = np.zeros((p_total, p_total))
@@ -461,19 +503,19 @@ class GAM:
             s = self.model_matrix.smooth_indices[i]
             smooth_slices.append(s)
             spec = parser.smooth_terms[i] if i < len(parser.smooth_terms) else None
-            smooth_labels.append(spec.label if spec else f'smooth_{i}')
+            smooth_labels.append(spec.label if spec else f"smooth_{i}")
 
         if smooth_slices:
             edf_map = edf_computer.edf_by_smooth(smooth_slices)
             for i, label in enumerate(smooth_labels):
-                self.edf_per_smooth[label] = {'edf': max(1.0, edf_map.get(i, 1.0))}
+                self.edf_per_smooth[label] = {"edf": max(1.0, edf_map.get(i, 1.0))}
 
         # 8. Estimate dispersion parameter
         self.dispersion_ = self._estimate_dispersion()
 
         self.fitted = True
         if verbose:
-            print(f'Fitted GAM with {self.edf:.2f} total EDF')
+            print(f"Fitted GAM with {self.edf:.2f} total EDF")
 
         return self
 
@@ -498,11 +540,11 @@ class GAM:
             w = np.asarray(self.weights_col, dtype=float)
 
         if len(w) != n:
-            raise ValueError(f'Weights length {len(w)} != n={n}')
+            raise ValueError(f"Weights length {len(w)} != n={n}")
         if not np.all(w > 0):
-            raise ValueError('All weights must be positive')
+            raise ValueError("All weights must be positive")
         if not np.all(np.isfinite(w)):
-            raise ValueError('All weights must be finite')
+            raise ValueError("All weights must be finite")
 
         return w / w.mean()  # normalize to mean 1
 
@@ -541,7 +583,7 @@ class GAM:
         phi = float(np.sum(pearson_resid_sq) / dof)
         return max(phi, 1e-6)
 
-    def standard_errors(self) -> Optional[np.ndarray]:
+    def standard_errors(self) -> np.ndarray | None:
         """Compute Bayesian posterior standard errors for coefficients.
 
         Uses the Bayesian posterior covariance (Wood 2006, mgcv default):
@@ -569,7 +611,7 @@ class GAM:
         mu = family.linkinv(eta)
         dmu_deta = family.dmu_deta(eta)
         var_mu = np.maximum(family.variance(mu, self.dispersion_), 1e-10)
-        w = np.clip(dmu_deta ** 2 / var_mu, 1e-12, 1e8)
+        w = np.clip(dmu_deta**2 / var_mu, 1e-12, 1e8)
 
         XtWX = X.T @ (X * w[:, np.newaxis])
 
@@ -592,6 +634,7 @@ class GAM:
             (lower, upper) arrays of shape (p,).
         """
         from scipy.stats import norm
+
         se = self.standard_errors()
         if se is None:
             return (np.full(len(self.beta), np.nan), np.full(len(self.beta), np.nan))
@@ -608,53 +651,61 @@ class GAM:
             Human-readable summary string matching mgcv's summary.gam() format.
         """
         if not self.fitted:
-            return 'Model not yet fitted. Call .fit() first.'
+            return "Model not yet fitted. Call .fit() first."
 
         try:
             from pymgcv.api.summary import summary as _summary
+
             return _summary(self, detailed=True)
         except Exception:
             pass
 
         # Fallback summary
         lines = []
-        lines.append('Family: ' + self.family.__class__.__name__)
-        lines.append('Link function: ' + getattr(self.family, 'link', 'unknown'))
-        lines.append(f'Dispersion parameter: {self.dispersion_:.6f}')
-        lines.append('')
-        lines.append('Formula: ' + self.formula)
-        lines.append('')
-        lines.append('Estimated smoothing parameters:')
+        lines.append("Family: " + self.family.__class__.__name__)
+        lines.append("Link function: " + getattr(self.family, "link", "unknown"))
+        lines.append(f"Dispersion parameter: {self.dispersion_:.6f}")
+        lines.append("")
+        lines.append("Formula: " + self.formula)
+        lines.append("")
+        lines.append("Estimated smoothing parameters:")
         for i, lam in enumerate(self.smoothing_parameters or []):
-            lines.append(f'  sp({i}) = {lam:.6e}')
-        lines.append('')
-        lines.append(f'Model dimension(s): {len(self.beta)} total coefs')
+            lines.append(f"  sp({i}) = {lam:.6e}")
+        lines.append("")
+        lines.append(f"Model dimension(s): {len(self.beta)} total coefs")
         if self.edf:
-            lines.append(f'Effective degrees of freedom: {self.edf:.2f}')
-        lines.append('')
+            lines.append(f"Effective degrees of freedom: {self.edf:.2f}")
+        lines.append("")
 
         se = self.standard_errors()
-        lines.append('Parametric coefficients:')
+        lines.append("Parametric coefficients:")
         from scipy.stats import t as t_dist
+
         n = len(self._y_fit) if self._y_fit is not None else len(self.beta)
-        for i, coef in enumerate(self.beta[:min(8, len(self.beta))]):
+        for i, coef in enumerate(self.beta[: min(8, len(self.beta))]):
             si = se[i] if (se is not None and i < len(se) and np.isfinite(se[i])) else np.nan
             if np.isfinite(si) and si > 0:
                 t_val = coef / si
                 p_val = 2 * (1 - t_dist.cdf(abs(t_val), max(1, n - len(self.beta))))
-                stars = '***' if p_val < 0.001 else ('**' if p_val < 0.01 else ('*' if p_val < 0.05 else ''))
-                lines.append(f'  Coef {i}: {coef:.6f}  SE={si:.6f}  t={t_val:.4f}  p={p_val:.4f} {stars}')
+                stars = (
+                    "***"
+                    if p_val < 0.001
+                    else ("**" if p_val < 0.01 else ("*" if p_val < 0.05 else ""))
+                )
+                lines.append(
+                    f"  Coef {i}: {coef:.6f}  SE={si:.6f}  t={t_val:.4f}  p={p_val:.4f} {stars}"
+                )
             else:
-                lines.append(f'  Coef {i}: {coef:.6f}')
+                lines.append(f"  Coef {i}: {coef:.6f}")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def predict(
         self,
-        data: Optional[pd.DataFrame] = None,
-        scale: str = 'response',
-        type: Optional[str] = None,
-    ) -> 'np.ndarray | dict':
+        data: pd.DataFrame | None = None,
+        scale: str = "response",
+        type: str | None = None,
+    ) -> np.ndarray | dict:
         """Make predictions.
 
         Args:
@@ -674,7 +725,7 @@ class GAM:
             Array for type='response'/'link'/'lpmatrix', dict for type='terms'.
         """
         if not self.fitted:
-            raise ValueError('Model not yet fitted')
+            raise ValueError("Model not yet fitted")
 
         if data is None:
             data = self.data
@@ -684,10 +735,12 @@ class GAM:
             scale = type
 
         # Construct design matrix for new data
-        from pymgcv.utils.model_matrix import ModelMatrix
         from pymgcv.utils.formula_parser import FormulaParser
+        from pymgcv.utils.model_matrix import ModelMatrix
+
         mm = ModelMatrix(
-            data, self.formula,
+            data,
+            self.formula,
             knots=self.knots,
             drop_intercept=self.drop_intercept,
         )
@@ -695,10 +748,10 @@ class GAM:
         offset_raw = mm.offset_vector()
         offset_new = offset_raw if offset_raw is not None else np.zeros(len(data))
 
-        if scale == 'lpmatrix':
+        if scale == "lpmatrix":
             return X_new
 
-        if scale == 'terms':
+        if scale == "terms":
             # Return per-smooth contributions
             parser = FormulaParser(self.formula)
             result: dict = {}
@@ -710,20 +763,22 @@ class GAM:
             # Also add parametric contribution
             if mm.param_indices is not None:
                 ps = mm.param_indices
-                result['(parametric)'] = X_new[:, ps] @ self.beta[ps]
+                result["(parametric)"] = X_new[:, ps] @ self.beta[ps]
             return result
 
         # Linear predictor
         eta = X_new @ self.beta + offset_new
 
-        if scale in ('response', 'mu'):
+        if scale in ("response", "mu"):
             return self.family.linkinv(eta)
-        elif scale == 'link':
+        elif scale == "link":
             return eta
         else:
-            raise ValueError(f'Invalid scale/type: {scale!r}')
+            raise ValueError(f"Invalid scale/type: {scale!r}")
 
-    def gam_check(self, type: str = 'deviance', print_summary: bool = True, plot: bool = False) -> dict:
+    def gam_check(
+        self, type: str = "deviance", print_summary: bool = True, plot: bool = False
+    ) -> dict:
         """Run GAM diagnostic checks (residual tests, convergence, k-adequacy).
 
         Args:
@@ -735,9 +790,10 @@ class GAM:
             Dict with keys 'residuals', 'k_check', 'tests', 'converged'.
         """
         from pymgcv.api.gam_check import gam_check as _gam_check
+
         return _gam_check(self, type=type, print_summary=print_summary, plot=plot)
 
-    def k_check(self, subsample: Optional[int] = None) -> 'pd.DataFrame':
+    def k_check(self, subsample: int | None = None) -> pd.DataFrame:
         """Check adequacy of basis dimensions for each smooth term.
 
         Args:
@@ -747,8 +803,9 @@ class GAM:
             DataFrame with columns k, k', edf, p-value for each smooth.
         """
         from pymgcv.api.gam_check import k_check as _k_check
+
         return _k_check(self, subsample=subsample)
 
     def __repr__(self) -> str:
         """String representation."""
-        return f'GAM({self.formula!r}, family={self.family_name!r})'
+        return f"GAM({self.formula!r}, family={self.family_name!r})"

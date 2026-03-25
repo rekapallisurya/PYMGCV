@@ -22,8 +22,6 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from scipy import linalg
 
@@ -55,7 +53,7 @@ class DemmlerReinschOrthogonalization:
         self,
         X: np.ndarray,
         S: np.ndarray,
-        null_space_dim: Optional[int] = None,
+        null_space_dim: int | None = None,
     ) -> None:
         """Initialize Demmler-Reinsch orthogonalization.
 
@@ -72,8 +70,8 @@ class DemmlerReinschOrthogonalization:
 
         if X.shape[1] != S.shape[0] or S.shape[0] != S.shape[1]:
             raise ValueError(
-                f'X has shape {X.shape}, S has shape {S.shape}. '
-                f'X.shape[1] must equal S.shape[0] == S.shape[1]'
+                f"X has shape {X.shape}, S has shape {S.shape}. "
+                f"X.shape[1] must equal S.shape[0] == S.shape[1]"
             )
 
         self.X = X
@@ -165,9 +163,7 @@ class DemmlerReinschOrthogonalization:
         """
         return self.U @ beta_tilde
 
-    def decompose_into_null_penalized(
-        self, beta: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def decompose_into_null_penalized(self, beta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Decompose coefficients into null space and penalized parts.
 
         Returns:
@@ -176,32 +172,32 @@ class DemmlerReinschOrthogonalization:
             - beta_penalized: remaining coefficients (subject to penalty)
         """
         beta_tilde = self.U.T @ beta
-        beta_null = beta_tilde[:self.null_space_dim]
-        beta_penalized = beta_tilde[self.null_space_dim:]
+        beta_null = beta_tilde[: self.null_space_dim]
+        beta_penalized = beta_tilde[self.null_space_dim :]
         return beta_null, beta_penalized
 
     def summary(self) -> str:
         """Return human-readable summary."""
         lines = [
-            'Demmler-Reinsch Orthogonalization',
-            '==================================',
-            f'Design matrix shape: {self.X.shape}',
-            f'Penalty matrix shape: {self.S.shape}',
-            f'Null space dimension: {self.null_space_dim}',
-            f'Penalized dimension: {self.penalized_dim}',
-            f'Transformation matrix U: {self.U.shape}',
-            f'Diagonalized penalty (eigenvalues):',
+            "Demmler-Reinsch Orthogonalization",
+            "==================================",
+            f"Design matrix shape: {self.X.shape}",
+            f"Penalty matrix shape: {self.S.shape}",
+            f"Null space dimension: {self.null_space_dim}",
+            f"Penalized dimension: {self.penalized_dim}",
+            f"Transformation matrix U: {self.U.shape}",
+            "Diagonalized penalty (eigenvalues):",
         ]
         eigenvalues = np.diag(self.D)
         for i, ev in enumerate(eigenvalues):
-            lines.append(f'  λ[{i}] = {ev:.6e}')
-        return '\n'.join(lines)
+            lines.append(f"  λ[{i}] = {ev:.6e}")
+        return "\n".join(lines)
 
 
 def orthogonalize_design_matrix(
     X: np.ndarray,
     S: np.ndarray,
-    null_space_dim: Optional[int] = None,
+    null_space_dim: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Functional API for Demmler-Reinsch orthogonalization.
 

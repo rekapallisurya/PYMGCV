@@ -38,21 +38,21 @@ class SmoothSpec:
 
     term_type: str  # 's', 'te', 'ti', 're', 'tp', 'cc', 't2'
     variables: list[str]
-    basis: str = 'tp'  # thin plate regression spline
+    basis: str = "tp"  # thin plate regression spline
     k: int | None = None
     m: tuple[int, int] | None = None
     by_variable: str | None = None  # for s(x, by=group)
     fx: bool = False  # fixed (unpenalized) basis
     bs_args: dict[str, Any] = field(default_factory=dict)
-    label: str = ''
+    label: str = ""
 
     def __post_init__(self) -> None:
         """Validate and construct label if not provided."""
         if not self.label:
-            var_str = ', '.join(self.variables)
-            k_str = f', k={self.k}' if self.k is not None else ''
-            by_str = f', by={self.by_variable}' if self.by_variable else ''
-            self.label = f'{self.term_type}({var_str}, basis={self.basis}{k_str}{by_str})'
+            var_str = ", ".join(self.variables)
+            k_str = f", k={self.k}" if self.k is not None else ""
+            by_str = f", by={self.by_variable}" if self.by_variable else ""
+            self.label = f"{self.term_type}({var_str}, basis={self.basis}{k_str}{by_str})"
 
 
 @dataclass
@@ -67,12 +67,12 @@ class ParametricSpec:
 
     variables: list[str]
     interaction: bool = False
-    label: str = ''
+    label: str = ""
 
     def __post_init__(self) -> None:
         """Construct label if not provided."""
         if not self.label:
-            self.label = ' * '.join(self.variables) if self.interaction else self.variables[0]
+            self.label = " * ".join(self.variables) if self.interaction else self.variables[0]
 
 
 class FormulaParser:
@@ -98,14 +98,9 @@ class FormulaParser:
     """
 
     # Regex patterns — match s, te, ti, t2, re terms
-    SMOOTH_PATTERN = re.compile(
-        r'(t2|te|ti|re|s)\s*\(\s*([^)]+)\s*\)',
-        re.IGNORECASE
-    )
-    FUNCTION_PATTERN = re.compile(
-        r'(\w+)\s*\(\s*([^)]+)\s*\)'
-    )
-    VARIABLE_PATTERN = re.compile(r'[a-zA-Z_]\w*')
+    SMOOTH_PATTERN = re.compile(r"(t2|te|ti|re|s)\s*\(\s*([^)]+)\s*\)", re.IGNORECASE)
+    FUNCTION_PATTERN = re.compile(r"(\w+)\s*\(\s*([^)]+)\s*\)")
+    VARIABLE_PATTERN = re.compile(r"[a-zA-Z_]\w*")
 
     def __init__(self, formula: str) -> None:
         """Initialize parser with formula string.
@@ -117,7 +112,7 @@ class FormulaParser:
             ValueError: If formula is malformed or missing response/predictor.
         """
         self.formula = formula.strip()
-        self.response: str = ''
+        self.response: str = ""
         self.smooth_terms: list[SmoothSpec] = []
         self.parametric_terms: list[ParametricSpec] = []
         self.parametric_names: list[str] = []
@@ -129,10 +124,10 @@ class FormulaParser:
     def _parse(self) -> None:
         """Parse formula into components."""
         # Split response ~ predictors
-        if '~' not in self.formula:
+        if "~" not in self.formula:
             raise ValueError(f'Invalid formula: {self.formula}. Must contain "~".')
 
-        parts = self.formula.split('~')
+        parts = self.formula.split("~")
         if len(parts) != 2:
             raise ValueError(f'Invalid formula: {self.formula}. Exactly one "~" required.')
 
@@ -140,7 +135,7 @@ class FormulaParser:
         rhs = parts[1].strip()
 
         if not self.response:
-            raise ValueError('Formula must have response variable.')
+            raise ValueError("Formula must have response variable.")
 
         self._parse_rhs(rhs)
 
@@ -153,10 +148,10 @@ class FormulaParser:
             - Special: offset(var)
         """
         # Handle offset() special case
-        offset_match = re.search(r'offset\s*\(\s*(\w+)\s*\)', rhs)
+        offset_match = re.search(r"offset\s*\(\s*(\w+)\s*\)", rhs)
         if offset_match:
             self.offset_term = offset_match.group(1)
-            rhs = rhs[:offset_match.start()] + rhs[offset_match.end():]
+            rhs = rhs[: offset_match.start()] + rhs[offset_match.end() :]
 
         # Split by + while respecting nested parentheses
         terms = self._split_by_plus(rhs)
@@ -181,18 +176,18 @@ class FormulaParser:
     def _split_by_plus(self, s: str) -> list[str]:
         """Split string by '+' while respecting nested parentheses."""
         terms = []
-        current = ''
+        current = ""
         depth = 0
         for char in s:
-            if char == '(':
+            if char == "(":
                 depth += 1
                 current += char
-            elif char == ')':
+            elif char == ")":
                 depth -= 1
                 current += char
-            elif char == '+' and depth == 0:
+            elif char == "+" and depth == 0:
                 terms.append(current)
-                current = ''
+                current = ""
             else:
                 current += char
         if current:
@@ -226,25 +221,25 @@ class FormulaParser:
             return None
 
         # Extract basis, k, m, by, fx from kwargs
-        basis = kwargs.pop('basis', kwargs.pop('bs', 'tp'))
-        k = kwargs.pop('k', None)
+        basis = kwargs.pop("basis", kwargs.pop("bs", "tp"))
+        k = kwargs.pop("k", None)
         if k is not None:
             try:
                 k = int(k)
             except (ValueError, TypeError):
                 k = None
 
-        m = kwargs.pop('m', None)
-        by_variable = kwargs.pop('by', None)
-        fx_raw = kwargs.pop('fx', 'false')
-        fx = str(fx_raw).lower() in ('true', '1', 'yes')
+        m = kwargs.pop("m", None)
+        by_variable = kwargs.pop("by", None)
+        fx_raw = kwargs.pop("fx", "false")
+        fx = str(fx_raw).lower() in ("true", "1", "yes")
 
         # For re() terms, default basis to 're'
-        if term_type == 're':
-            basis = 're'
+        if term_type == "re":
+            basis = "re"
         # For t2/te/ti, basis refers to marginal basis type
-        elif term_type in ('te', 'ti', 't2') and basis == 'tp':
-            basis = 'tp'
+        elif term_type in ("te", "ti", "t2") and basis == "tp":
+            basis = "tp"
 
         return SmoothSpec(
             term_type=term_type,
@@ -254,7 +249,7 @@ class FormulaParser:
             m=m,
             by_variable=by_variable,
             fx=fx,
-            bs_args=kwargs
+            bs_args=kwargs,
         )
 
     def _parse_parametric_term(self, term: str) -> ParametricSpec | None:
@@ -271,8 +266,8 @@ class FormulaParser:
             return None
 
         # Handle interactions
-        if '*' in term:
-            vars_in_interaction = [v.strip() for v in term.split('*')]
+        if "*" in term:
+            vars_in_interaction = [v.strip() for v in term.split("*")]
             return ParametricSpec(variables=vars_in_interaction, interaction=True)
 
         # Handle functions
@@ -281,7 +276,7 @@ class FormulaParser:
             func_name = func_match.group(1)
             func_arg = func_match.group(2).strip()
             # Store function application
-            self.function_terms[term] = f'{func_name}({func_arg})'
+            self.function_terms[term] = f"{func_name}({func_arg})"
             return ParametricSpec(variables=[func_arg])
 
         # Simple variable
@@ -307,12 +302,12 @@ class FormulaParser:
         variables: list[str] = []
         kwargs: dict[str, Any] = {}
 
-        parts = [p.strip() for p in arg_str.split(',')]
+        parts = [p.strip() for p in arg_str.split(",")]
         for part in parts:
-            if '=' in part:
-                key, val = part.split('=', 1)
+            if "=" in part:
+                key, val = part.split("=", 1)
                 key = key.strip()
-                val = val.strip().strip('"\'')
+                val = val.strip().strip("\"'")
                 kwargs[key] = val
             else:
                 # It's a variable
@@ -324,18 +319,18 @@ class FormulaParser:
     def summary(self) -> str:
         """Return human-readable summary of parsed formula."""
         lines = [
-            f'Formula: {self.formula}',
-            f'Response: {self.response}',
-            f'Smooth terms ({len(self.smooth_terms)}):',
+            f"Formula: {self.formula}",
+            f"Response: {self.response}",
+            f"Smooth terms ({len(self.smooth_terms)}):",
         ]
         for spec in self.smooth_terms:
-            lines.append(f'  - {spec.label}')
-        lines.append(f'Parametric terms ({len(self.parametric_terms)}):')
+            lines.append(f"  - {spec.label}")
+        lines.append(f"Parametric terms ({len(self.parametric_terms)}):")
         for spec in self.parametric_terms:
-            lines.append(f'  - {spec.label}')
+            lines.append(f"  - {spec.label}")
         if self.offset_term:
-            lines.append(f'Offset: {self.offset_term}')
-        return '\n'.join(lines)
+            lines.append(f"Offset: {self.offset_term}")
+        return "\n".join(lines)
 
 
 def parse_formula(formula: str) -> FormulaParser:

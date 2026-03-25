@@ -19,8 +19,6 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from scipy import linalg
 
@@ -43,7 +41,7 @@ class EDFComputer:
         S_combined: np.ndarray,
         family: object,
         beta: np.ndarray,
-        offset: Optional[np.ndarray] = None,
+        offset: np.ndarray | None = None,
         dispersion: float = 1.0,
     ) -> None:
         """Initialize EDF computer.
@@ -60,14 +58,18 @@ class EDFComputer:
         self.S_combined = np.asarray(S_combined, dtype=np.float64)
         self.family = family
         self.beta = np.asarray(beta, dtype=np.float64)
-        self.offset = np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros(self.X.shape[0])
+        self.offset = (
+            np.asarray(offset, dtype=np.float64)
+            if offset is not None
+            else np.zeros(self.X.shape[0])
+        )
         self.dispersion = float(dispersion)
 
         self.n, self.p = self.X.shape
 
         # Compute influence matrix F (p x p)
-        self.F: Optional[np.ndarray] = None
-        self.H: Optional[np.ndarray] = None
+        self.F: np.ndarray | None = None
+        self.H: np.ndarray | None = None
         self._compute_hat_matrix()
 
         # EDF components
@@ -122,9 +124,7 @@ class EDFComputer:
         # Total EDF
         self.edf_total = np.trace(self.H)
 
-    def edf_by_smooth(
-        self, smooth_indices: list[slice]
-    ) -> dict[int, float]:
+    def edf_by_smooth(self, smooth_indices: list[slice]) -> dict[int, float]:
         """Compute EDF for each smooth term.
 
         Args:
@@ -151,13 +151,13 @@ class EDFComputer:
     def summary(self) -> str:
         """Summary of EDF."""
         lines = [
-            'Effective Degrees of Freedom',
-            '=============================',
-            f'Total EDF: {self.edf_total:.4f}',
-            f'Reference DF: {self.ref_df}',
-            f'Ratio (EDF/Ref): {self.edf_total / self.ref_df:.4f}',
+            "Effective Degrees of Freedom",
+            "=============================",
+            f"Total EDF: {self.edf_total:.4f}",
+            f"Reference DF: {self.ref_df}",
+            f"Ratio (EDF/Ref): {self.edf_total / self.ref_df:.4f}",
         ]
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
 
 def compute_edf(
@@ -165,7 +165,7 @@ def compute_edf(
     S_combined: np.ndarray,
     family: object,
     beta: np.ndarray,
-    offset: Optional[np.ndarray] = None,
+    offset: np.ndarray | None = None,
     dispersion: float = 1.0,
 ) -> float:
     """Compute total effective degrees of freedom.
@@ -191,7 +191,7 @@ def compute_edf_per_smooth(
     family: object,
     beta: np.ndarray,
     smooth_indices: list[slice],
-    offset: Optional[np.ndarray] = None,
+    offset: np.ndarray | None = None,
     dispersion: float = 1.0,
 ) -> dict[int, float]:
     """Compute EDF per smooth term.

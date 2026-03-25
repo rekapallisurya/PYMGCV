@@ -24,7 +24,6 @@ Module exports:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 import numpy as np
 from scipy import special
@@ -88,9 +87,7 @@ class Family(ABC):
         pass
 
     @abstractmethod
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for observations.
 
         Args:
@@ -138,9 +135,7 @@ class GaussianFamily(Family):
         """Variance = φ (constant)."""
         return np.full_like(mu, dispersion)
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Gaussian.
 
         LL = -1/2 Σ (y - μ)² / φ - (n/2) log(φ)
@@ -181,9 +176,7 @@ class PoissonFamily(Family):
         """Starting mu for Poisson: y + 0.1 (avoids log(0))."""
         return np.maximum(y, 0.0) + 0.1
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Poisson.
 
         LL = Σ (y log(μ) - μ - log(y!))
@@ -235,9 +228,7 @@ class GammaFamily(Family):
         """Starting mu for Gamma: max(y, epsilon)."""
         return np.maximum(y, 1e-6)
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Gamma.
 
         Parameterized by mean μ and shape α.
@@ -279,7 +270,7 @@ class TweedieFamily(Family):
             ValueError: If power not in valid range (typically 1 < p < 2).
         """
         if not (1.0 < power < 2.0):
-            raise ValueError(f'Tweedie power must be in (1, 2), got {power}')
+            raise ValueError(f"Tweedie power must be in (1, 2), got {power}")
         self.power = float(power)
         self.estimate_power = bool(estimate_power)
         # Cache for log Wright function: (y_id, phi, p) -> log_W array.
@@ -346,7 +337,7 @@ class TweedieFamily(Family):
         """
         from scipy.special import gammaln
 
-        alpha       = (2.0 - p) / (p - 1.0)
+        alpha = (2.0 - p) / (p - 1.0)
         log_phi_2mp = np.log(phi * (2.0 - p))
         log_phi_pm1 = np.log(phi * (p - 1.0))
 
@@ -359,28 +350,24 @@ class TweedieFamily(Family):
         j_max = int(np.ceil(lambda_max + 10.0 * np.sqrt(max(lambda_max, 0.5)))) + 50
         j_max = min(max(j_max, 30), 500)
 
-        j_arr          = np.arange(1, j_max + 1, dtype=np.float64)  # (J,)
-        gammaln_jp1    = gammaln(j_arr + 1.0)     # log j!
-        gammaln_jalpha = gammaln(j_arr * alpha)    # log Γ(j·α)
+        j_arr = np.arange(1, j_max + 1, dtype=np.float64)  # (J,)
+        gammaln_jp1 = gammaln(j_arr + 1.0)  # log j!
+        gammaln_jalpha = gammaln(j_arr * alpha)  # log Γ(j·α)
 
         # Constant part of log t_j (does not depend on y)
-        j_const = (- j_arr * log_phi_2mp
-                   - j_arr * alpha * log_phi_pm1
-                   - gammaln_jp1
-                   - gammaln_jalpha)               # (J,)
+        j_const = (
+            -j_arr * log_phi_2mp - j_arr * alpha * log_phi_pm1 - gammaln_jp1 - gammaln_jalpha
+        )  # (J,)
 
         # Full log t_j(y_i): shape (N, J)
-        log_t = ((j_arr[np.newaxis, :] * alpha - 1.0) * log_y[:, np.newaxis]
-                 + j_const[np.newaxis, :])
+        log_t = (j_arr[np.newaxis, :] * alpha - 1.0) * log_y[:, np.newaxis] + j_const[np.newaxis, :]
 
         # Numerically stable log-sum-exp over j axis
         max_lt = np.max(log_t, axis=1, keepdims=True)
-        log_W  = max_lt[:, 0] + np.log(np.sum(np.exp(log_t - max_lt), axis=1))
+        log_W = max_lt[:, 0] + np.log(np.sum(np.exp(log_t - max_lt), axis=1))
         return log_W
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Tweedie distribution (exponential family form).
 
         Full density from Dunn & Smyth (2005) including Wright function W:
@@ -398,13 +385,13 @@ class TweedieFamily(Family):
 
         Gradient: dLL/dμ = (y − μ) / (φ · μ^p)   (unchanged — W is μ-free)
         """
-        p   = self.power
+        p = self.power
         phi = np.maximum(float(dispersion), 1e-10)
-        mu  = np.maximum(np.asarray(mu,  dtype=np.float64), 1e-10)
-        y   = np.asarray(y, dtype=np.float64)   # do NOT clip zeros
+        mu = np.maximum(np.asarray(mu, dtype=np.float64), 1e-10)
+        y = np.asarray(y, dtype=np.float64)  # do NOT clip zeros
 
         # Exponential-family kernel: [y·θ(μ) − b(θ(μ))] / φ
-        term1 = y * mu ** (1 - p) / ((1 - p) * phi)   # 0 when y = 0
+        term1 = y * mu ** (1 - p) / ((1 - p) * phi)  # 0 when y = 0
         term2 = mu ** (2 - p) / ((2 - p) * phi)
         kernel = term1 - term2
 
@@ -446,7 +433,7 @@ class TweedieFamily(Family):
 
     def summary(self) -> str:
         """Return summary of Tweedie family."""
-        return f'TweedieFamily(power={self.power})'
+        return f"TweedieFamily(power={self.power})"
 
 
 class BinomialFamily(Family):
@@ -454,7 +441,7 @@ class BinomialFamily(Family):
 
     Logit link (default): η = logit(μ) = log(μ/(1-μ))
     Variance: Var(Y) = μ(1-μ)
-    
+
     Supports multiple link functions:
     - logit: η = log(μ/(1-μ))
     - probit: η = Φ⁻¹(μ)
@@ -464,7 +451,7 @@ class BinomialFamily(Family):
         link: Link function ('logit', 'probit', 'cloglog'). Default 'logit'.
     """
 
-    def __init__(self, link: str = 'logit') -> None:
+    def __init__(self, link: str = "logit") -> None:
         """Initialize Binomial family.
 
         Args:
@@ -473,31 +460,31 @@ class BinomialFamily(Family):
         Raises:
             ValueError: If link not in supported options.
         """
-        if link not in ('logit', 'probit', 'cloglog'):
-            raise ValueError(f'Unsupported link: {link}. Choose from: logit, probit, cloglog')
+        if link not in ("logit", "probit", "cloglog"):
+            raise ValueError(f"Unsupported link: {link}. Choose from: logit, probit, cloglog")
         self.link = link
 
     def linkinv(self, eta: np.ndarray) -> np.ndarray:
         """Inverse link function: μ = g⁻¹(η)."""
-        if self.link == 'logit':
+        if self.link == "logit":
             # μ = 1/(1 + exp(-η)) = exp(η)/(1 + exp(η))
             # Use numerically stable version
             return 1.0 / (1.0 + np.exp(-np.clip(eta, -500, 500)))
-        elif self.link == 'probit':
+        elif self.link == "probit":
             # μ = Φ(η) (standard normal CDF)
             return special.ndtr(eta)
-        elif self.link == 'cloglog':
+        elif self.link == "cloglog":
             # μ = 1 - exp(-exp(η))
             return 1.0 - np.exp(-np.exp(np.clip(eta, -500, 500)))
 
     def linkfun(self, mu: np.ndarray) -> np.ndarray:
         """Forward link: η = g(μ)."""
         mu = np.clip(mu, 1e-10, 1 - 1e-10)
-        if self.link == 'logit':
+        if self.link == "logit":
             return np.log(mu / (1 - mu))
-        elif self.link == 'probit':
+        elif self.link == "probit":
             return special.ndtri(mu)
-        elif self.link == 'cloglog':
+        elif self.link == "cloglog":
             return np.log(-np.log(1 - mu))
         return np.log(mu / (1 - mu))  # default to logit
 
@@ -507,14 +494,14 @@ class BinomialFamily(Family):
 
     def dmu_deta(self, eta: np.ndarray) -> np.ndarray:
         """Derivative of inverse link: dμ/dη."""
-        if self.link == 'logit':
+        if self.link == "logit":
             # d/dη[1/(1+exp(-η))] = exp(-η)/(1+exp(-η))² = μ(1-μ)
             mu = self.linkinv(eta)
             return mu * (1 - mu)
-        elif self.link == 'probit':
+        elif self.link == "probit":
             # d/dη[Φ(η)] = φ(η) = standard normal PDF
-            return np.exp(-0.5 * eta ** 2) / np.sqrt(2 * np.pi)
-        elif self.link == 'cloglog':
+            return np.exp(-0.5 * eta**2) / np.sqrt(2 * np.pi)
+        elif self.link == "cloglog":
             # d/dη[1 - exp(-exp(η))] = exp(η - exp(η))
             return np.exp(eta - np.exp(np.clip(eta, -500, 500)))
 
@@ -522,13 +509,11 @@ class BinomialFamily(Family):
         """Variance = μ(1-μ) [dispersion parameter ignored for binomial]."""
         return mu * (1 - mu)
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Binomial.
 
         LL = Σ [y log(μ) + (1-y) log(1-μ)]
-        
+
         Assumes binary data (y ∈ {0, 1}).
         For grouped data, supply y = count of successes and weights = total counts.
         """
@@ -538,7 +523,7 @@ class BinomialFamily(Family):
 
     def summary(self) -> str:
         """Return summary of Binomial family."""
-        return f'BinomialFamily(link={self.link})'
+        return f"BinomialFamily(link={self.link})"
 
 
 class NegativeBinomialFamily(Family):
@@ -546,7 +531,7 @@ class NegativeBinomialFamily(Family):
 
     Log link: η = log(μ)
     Variance: Var(Y) = μ + μ²/θ
-    
+
     The negative binomial distribution is a generalization of Poisson for
     overdispersed count data. The parameter θ is the shape/dispersion parameter.
 
@@ -565,7 +550,7 @@ class NegativeBinomialFamily(Family):
             ValueError: If theta <= 0.
         """
         if theta <= 0:
-            raise ValueError(f'Theta must be positive, got {theta}')
+            raise ValueError(f"Theta must be positive, got {theta}")
         self.theta = float(theta)
 
     def linkinv(self, eta: np.ndarray) -> np.ndarray:
@@ -588,19 +573,17 @@ class NegativeBinomialFamily(Family):
         """Starting mu for NegBin: max(y, 0.1)."""
         return np.maximum(y, 0.0) + 0.1
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Negative Binomial.
 
         Parameterized by mean μ and shape θ:
         LL = Σ [log(Γ(y+θ)) - log(Γ(θ)) - log(y!) + θ log(θ) - (y+θ) log(μ+θ)]
         """
         theta = self.theta
-        
+
         # Ensure numerical stability
         mu = np.maximum(mu, 1e-10)
-        
+
         # Negative binomial loglik (using gamma functions)
         loglik = np.sum(
             special.loggamma(y + theta)
@@ -613,7 +596,7 @@ class NegativeBinomialFamily(Family):
 
     def summary(self) -> str:
         """Return summary of Negative Binomial family."""
-        return f'NegativeBinomialFamily(theta={self.theta})'
+        return f"NegativeBinomialFamily(theta={self.theta})"
 
 
 class InverseGaussianFamily(Family):
@@ -621,7 +604,7 @@ class InverseGaussianFamily(Family):
 
     1/μ² link: η = 1/μ²
     Variance: Var(Y) = φ μ³
-    
+
     The Inverse Gaussian (also called Wald) distribution is useful for
     heavy-tailed positive continuous data like insurance claims, survival times.
 
@@ -629,7 +612,7 @@ class InverseGaussianFamily(Family):
         link: Link function ('inverse-square' or '1/mu^2'). Default 'inverse-square'.
     """
 
-    def __init__(self, link: str = 'inverse-square') -> None:
+    def __init__(self, link: str = "inverse-square") -> None:
         """Initialize Inverse Gaussian family.
 
         Args:
@@ -638,8 +621,8 @@ class InverseGaussianFamily(Family):
         Raises:
             ValueError: If link not supported.
         """
-        if link not in ('inverse-square', '1/mu^2'):
-            raise ValueError(f'Unsupported link: {link}. Choose: inverse-square or 1/mu^2')
+        if link not in ("inverse-square", "1/mu^2"):
+            raise ValueError(f"Unsupported link: {link}. Choose: inverse-square or 1/mu^2")
         self.link = link
 
     def linkinv(self, eta: np.ndarray) -> np.ndarray:
@@ -661,35 +644,33 @@ class InverseGaussianFamily(Family):
     def dmu_deta(self, eta: np.ndarray) -> np.ndarray:
         """Derivative: dμ/dη = -1/(2η^(3/2))."""
         eta_safe = np.maximum(eta, 1e-10)
-        return -0.5 / (eta_safe**(1.5))
+        return -0.5 / (eta_safe ** (1.5))
 
     def variance(self, mu: np.ndarray, dispersion: float = 1.0) -> np.ndarray:
         """Variance = φ μ³."""
         return dispersion * mu**3
 
-    def loglik(
-        self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0
-    ) -> float:
+    def loglik(self, y: np.ndarray, mu: np.ndarray, dispersion: float = 1.0) -> float:
         """Log-likelihood for Inverse Gaussian.
 
         Parameterized by mean μ and dispersion φ:
         LL = -n/2 log(2πφ) - Σ[(y - μ)² / (2φ μ² y)]
         """
         phi = dispersion
-        
+
         # Ensure numerical stability
         mu = np.maximum(mu, 1e-10)
         y = np.maximum(y, 1e-10)
-        
+
         n = len(y)
         loglik = -0.5 * n * np.log(2 * np.pi * phi)
-        loglik -= np.sum((y - mu)**2 / (2 * phi * mu**2 * y))
-        
+        loglik -= np.sum((y - mu) ** 2 / (2 * phi * mu**2 * y))
+
         return loglik
 
     def summary(self) -> str:
         """Return summary of Inverse Gaussian family."""
-        return f'InverseGaussianFamily(link={self.link})'
+        return f"InverseGaussianFamily(link={self.link})"
 
 
 class BetaFamily(Family):
@@ -732,20 +713,22 @@ class BetaFamily(Family):
                  + (µφ - 1) log y + ((1-µ)φ - 1) log(1-y) ]
         """
         phi = max(dispersion, 1e-6)
-        mu  = np.clip(mu, 1e-10, 1 - 1e-10)
-        y   = np.clip(y,  1e-10, 1 - 1e-10)
+        mu = np.clip(mu, 1e-10, 1 - 1e-10)
+        y = np.clip(y, 1e-10, 1 - 1e-10)
         a = mu * phi
         b = (1 - mu) * phi
-        return float(np.sum(
-            special.loggamma(phi)
-            - special.loggamma(a)
-            - special.loggamma(b)
-            + (a - 1) * np.log(y)
-            + (b - 1) * np.log(1 - y)
-        ))
+        return float(
+            np.sum(
+                special.loggamma(phi)
+                - special.loggamma(a)
+                - special.loggamma(b)
+                + (a - 1) * np.log(y)
+                + (b - 1) * np.log(1 - y)
+            )
+        )
 
     def summary(self) -> str:
-        return 'BetaFamily(link=logit)'
+        return "BetaFamily(link=logit)"
 
 
 class GaulssFamily(Family):
@@ -779,7 +762,7 @@ class GaulssFamily(Family):
         phi = max(dispersion, 1e-10)
         resid = y - mu
         n = len(y)
-        return float(-0.5 * (np.sum(resid ** 2) / phi + n * np.log(2 * np.pi * phi)))
+        return float(-0.5 * (np.sum(resid**2) / phi + n * np.log(2 * np.pi * phi)))
 
     def summary(self) -> str:
-        return 'GaulssFamily(link=identity)'
+        return "GaulssFamily(link=identity)"

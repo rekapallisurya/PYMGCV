@@ -20,8 +20,6 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from scipy import linalg
 
@@ -48,7 +46,7 @@ class REMLObjective:
         S_list: list[np.ndarray],
         smooth_starts: list[int],
         smooth_sizes: list[int],
-        offset: Optional[np.ndarray] = None,
+        offset: np.ndarray | None = None,
         dispersion: float = 1.0,
         gamma: float = 1.0,
     ) -> None:
@@ -75,7 +73,9 @@ class REMLObjective:
         self.S_list = [np.asarray(S, dtype=np.float64) for S in S_list]
         self.smooth_starts = smooth_starts
         self.smooth_sizes = smooth_sizes
-        self.offset = np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
+        self.offset = (
+            np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros_like(y)
+        )
         self.dispersion = float(dispersion)
         self.gamma = float(gamma)
 
@@ -83,18 +83,11 @@ class REMLObjective:
         self.n_smooth = len(S_list)
 
         # Precompute per-penalty eigenvalues (S_j never changes after construction)
-        self._S_eigs_list: list[np.ndarray] = [
-            np.linalg.eigvalsh(S_j) for S_j in self.S_list
-        ]
-        self._S_pos_eigs_list: list[np.ndarray] = [
-            eigs[eigs > 1e-10] for eigs in self._S_eigs_list
-        ]
-        self._penalty_rank_list: list[int] = [
-            int(len(pos)) for pos in self._S_pos_eigs_list
-        ]
+        self._S_eigs_list: list[np.ndarray] = [np.linalg.eigvalsh(S_j) for S_j in self.S_list]
+        self._S_pos_eigs_list: list[np.ndarray] = [eigs[eigs > 1e-10] for eigs in self._S_eigs_list]
+        self._penalty_rank_list: list[int] = [int(len(pos)) for pos in self._S_pos_eigs_list]
         self._log_S_base: list[float] = [
-            float(np.sum(np.log(pos))) if len(pos) > 0 else 0.0
-            for pos in self._S_pos_eigs_list
+            float(np.sum(np.log(pos))) if len(pos) > 0 else 0.0 for pos in self._S_pos_eigs_list
         ]
         # Cache for Mp (null space dim of S_combined); keyed by rounded lambda
         self._mp_cache: tuple | None = None
@@ -149,6 +142,7 @@ class REMLObjective:
 
         # Check if Gaussian (profiled REML)
         from pymgcv.distributions.family_base import GaussianFamily
+
         S_eigs = np.linalg.eigvalsh(S_combined)
         Mp = int(np.sum(S_eigs < 1e-10))
         n_eff = max(self.n - Mp, 1)
@@ -166,9 +160,7 @@ class REMLObjective:
 
         return reml
 
-    def gradient_wrt_log_lambda(
-        self, beta: np.ndarray, log_lambda: np.ndarray
-    ) -> np.ndarray:
+    def gradient_wrt_log_lambda(self, beta: np.ndarray, log_lambda: np.ndarray) -> np.ndarray:
         r"""Compute gradient of REML w.r.t. log(lambda).
 
         For Gaussian profiled REML:
@@ -194,7 +186,7 @@ class REMLObjective:
             mu = self.family.linkinv(eta)
             dmu_deta = self.family.dmu_deta(eta)
             var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
-            w = np.clip((dmu_deta ** 2) / var_mu, 0, 1e10)
+            w = np.clip((dmu_deta**2) / var_mu, 0, 1e10)
 
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
             A = XtWX + S_combined + 1e-8 * np.eye(self.p)
@@ -205,6 +197,7 @@ class REMLObjective:
 
             # Check if Gaussian (profiled REML gradient)
             from pymgcv.distributions.family_base import GaussianFamily
+
             penalty = float(beta @ S_combined @ beta)
             S_eigs = np.linalg.eigvalsh(S_combined)
             Mp = int(np.sum(S_eigs < 1e-10))
@@ -229,9 +222,7 @@ class REMLObjective:
         except Exception:
             return np.full(self.n_smooth, np.nan)
 
-    def hessian_wrt_log_lambda(
-        self, beta: np.ndarray, log_lambda: np.ndarray
-    ) -> np.ndarray:
+    def hessian_wrt_log_lambda(self, beta: np.ndarray, log_lambda: np.ndarray) -> np.ndarray:
         r"""Compute Hessian of REML w.r.t. log(lambda).
 
         H[j,k] = d^2 REML / (d rho_j d rho_k)
@@ -255,7 +246,7 @@ class REMLObjective:
             dmu_deta = self.family.dmu_deta(eta)
             var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
 
-            w = np.clip((dmu_deta ** 2) / var_mu, 0, 1e10)
+            w = np.clip((dmu_deta**2) / var_mu, 0, 1e10)
 
             XtWX = self.X.T @ (self.X * w[:, np.newaxis])
             A = XtWX + S_combined + 1e-8 * np.eye(self.p)
@@ -288,8 +279,8 @@ class REMLObjective:
         Returns:
             (reml_score, gradient, hessian)
         """
-        from pymgcv.linalg.penalized_solver import PenalizedSolver
         from pymgcv.distributions.family_base import GaussianFamily
+        from pymgcv.linalg.penalized_solver import PenalizedSolver
 
         lambda_vec = np.exp(log_lambda)
         S_combined = self._construct_combined_penalty(lambda_vec)
@@ -299,7 +290,7 @@ class REMLObjective:
         mu = self.family.linkinv(eta)
         dmu_deta = self.family.dmu_deta(eta)
         var_mu = np.maximum(self.family.variance(mu, self.dispersion), 1e-10)
-        w = np.clip((dmu_deta ** 2) / var_mu, 1e-12, 1e8)
+        w = np.clip((dmu_deta**2) / var_mu, 1e-12, 1e8)
 
         XtWX = self.X.T @ (self.X * w[:, np.newaxis])
 
@@ -333,7 +324,11 @@ class REMLObjective:
             reml = n_eff * np.log(max(rss_p / n_eff, 1e-300)) + logdet_A - self.gamma * log_S_plus
 
         if not np.isfinite(reml):
-            return float('nan'), np.full(self.n_smooth, np.nan), np.full((self.n_smooth, self.n_smooth), np.nan)
+            return (
+                float("nan"),
+                np.full(self.n_smooth, np.nan),
+                np.full((self.n_smooth, self.n_smooth), np.nan),
+            )
 
         # ---- Gradient and Hessian via A^{-1} S_j ----
         # Pre-compute A^{-1} S_j for each j (reuse solver)
@@ -399,7 +394,7 @@ def compute_reml(
     y: np.ndarray,
     beta: np.ndarray,
     S_list: list[np.ndarray],
-    lambda_vec: Optional[np.ndarray] = None,
+    lambda_vec: np.ndarray | None = None,
 ) -> float:
     """Functional API for REML computation.
 
@@ -414,13 +409,16 @@ def compute_reml(
         REML score.
     """
     from pymgcv.distributions.family_base import GaussianFamily
-    
+
     if lambda_vec is None:
         lambda_vec = np.ones(len(S_list))
 
     family = GaussianFamily()
     reml_obj = REMLObjective(
-        X, y, family, S_list,
+        X,
+        y,
+        family,
+        S_list,
         smooth_starts=[0],  # Placeholder
         smooth_sizes=[X.shape[1]],  # Placeholder
     )

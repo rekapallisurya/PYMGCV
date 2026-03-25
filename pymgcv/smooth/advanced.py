@@ -13,14 +13,12 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
 import numpy as np
-from numpy.polynomial.legendre import leggauss
-
 
 # ---------------------------------------------------------------------------
 # Adaptive Smooth (bs='ad')
 # ---------------------------------------------------------------------------
+
 
 class AdaptiveSpline:
     """Adaptive smooth with spatially-varying penalty (bs='ad').
@@ -47,6 +45,7 @@ class AdaptiveSpline:
         n_adaptive: int = 5,
     ) -> None:
         from pymgcv.smooth.bspline import PSplineBasis, _diff_matrix
+
         self.X = np.asarray(X, dtype=float).ravel()
         self.n = len(self.X)
         self.k = k
@@ -84,6 +83,7 @@ class AdaptiveSpline:
 
     def predict(self, X_new: np.ndarray) -> np.ndarray:
         from pymgcv.smooth.bspline import _bspline_design_matrix
+
         X_new = np.asarray(X_new, dtype=float).ravel()
         return _bspline_design_matrix(X_new, self.knots, 3)
 
@@ -93,11 +93,12 @@ class AdaptiveSpline:
 # ---------------------------------------------------------------------------
 
 _GP_KERNELS = {
-    'exp_quad': lambda d, l: np.exp(-0.5 * (d / l) ** 2),                  # squared-exponential
-    'matern12': lambda d, l: np.exp(-d / l),                                 # Matérn 1/2
-    'matern32': lambda d, l: (1 + np.sqrt(3) * d / l) * np.exp(-np.sqrt(3) * d / l),
-    'matern52': lambda d, l: (1 + np.sqrt(5)*d/l + 5*d**2/(3*l**2)) * np.exp(-np.sqrt(5)*d/l),
-    'rational_quadratic': lambda d, l: (1 + d**2 / (2 * l**2)) ** -1,
+    "exp_quad": lambda d, l: np.exp(-0.5 * (d / l) ** 2),  # squared-exponential
+    "matern12": lambda d, l: np.exp(-d / l),  # Matérn 1/2
+    "matern32": lambda d, l: (1 + np.sqrt(3) * d / l) * np.exp(-np.sqrt(3) * d / l),
+    "matern52": lambda d, l: (1 + np.sqrt(5) * d / l + 5 * d**2 / (3 * l**2))
+    * np.exp(-np.sqrt(5) * d / l),
+    "rational_quadratic": lambda d, l: (1 + d**2 / (2 * l**2)) ** -1,
 }
 
 
@@ -121,8 +122,8 @@ class GPSmooth:
         self,
         X: np.ndarray,
         k: int = 10,
-        kernel: str = 'exp_quad',
-        length_scale: Optional[float] = None,
+        kernel: str = "exp_quad",
+        length_scale: float | None = None,
     ) -> None:
         X = np.asarray(X, dtype=float)
         if X.ndim == 1:
@@ -131,11 +132,16 @@ class GPSmooth:
         self.n, self.d = X.shape
         self.k = min(k, self.n)
         self.kernel_name = kernel
-        self._kern_fn = _GP_KERNELS.get(kernel, _GP_KERNELS['exp_quad'])
+        self._kern_fn = _GP_KERNELS.get(kernel, _GP_KERNELS["exp_quad"])
 
         if length_scale is None:
             # Heuristic: median inter-point distance
-            dists = np.sqrt(np.sum((X[::max(1, len(X)//500)] - X[::max(1, len(X)//500), :].mean(0))**2, axis=1))
+            dists = np.sqrt(
+                np.sum(
+                    (X[:: max(1, len(X) // 500)] - X[:: max(1, len(X) // 500), :].mean(0)) ** 2,
+                    axis=1,
+                )
+            )
             length_scale = float(np.median(dists[dists > 0]) or 1.0)
         self.length_scale = length_scale
 
@@ -145,11 +151,12 @@ class GPSmooth:
 
     def _select_inducing_points(self) -> None:
         from scipy.cluster.vq import kmeans2
+
         if self.k >= self.n:
             self.inducing = self.X.copy()
         else:
             try:
-                centroids, _ = kmeans2(self.X, self.k, minit='points', niter=10)
+                centroids, _ = kmeans2(self.X, self.k, minit="points", niter=10)
                 self.inducing = centroids
             except Exception:
                 idx = np.round(np.linspace(0, self.n - 1, self.k)).astype(int)
@@ -158,7 +165,7 @@ class GPSmooth:
     def _dist_matrix(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
         """Euclidean distance matrix between rows of A and B."""
         diff = A[:, None, :] - B[None, :, :]
-        return np.sqrt(np.sum(diff ** 2, axis=-1))
+        return np.sqrt(np.sum(diff**2, axis=-1))
 
     def _build_basis(self) -> None:
         l = self.length_scale
@@ -214,6 +221,7 @@ class GPSmooth:
 # Factor Smooth Interactions (bs='fs')
 # ---------------------------------------------------------------------------
 
+
 class FactorSmooth:
     """Factor smooth interaction basis (bs='fs').
 
@@ -237,7 +245,7 @@ class FactorSmooth:
         X: np.ndarray,
         group: np.ndarray,
         k: int = 10,
-        basis: str = 'cr',
+        basis: str = "cr",
     ) -> None:
         from pymgcv.smooth.bspline import PSplineBasis
         from pymgcv.smooth.cubic_spline import CubicRegressionSpline
@@ -251,24 +259,24 @@ class FactorSmooth:
         n_levels = len(self.levels)
 
         # Fit a single global basis using all x values
-        if basis == 'cr':
+        if basis == "cr":
             glob_basis = CubicRegressionSpline(self.X, k=k)
         else:
             glob_basis = PSplineBasis(self.X, k=k)
 
-        B_global = glob_basis.B if hasattr(glob_basis, 'B') else glob_basis.basis_matrix
-        S_global = glob_basis.S if hasattr(glob_basis, 'S') else glob_basis.penalty_matrix
+        B_global = glob_basis.B if hasattr(glob_basis, "B") else glob_basis.basis_matrix
+        S_global = glob_basis.S if hasattr(glob_basis, "S") else glob_basis.penalty_matrix
 
         # Expand: for each level, zero out rows where group != level
         self.B = np.zeros((self.n, k * n_levels))
         for li, lv in enumerate(self.levels):
             mask = group == lv
-            self.B[mask, li*k:(li+1)*k] = B_global[mask, :]
+            self.B[mask, li * k : (li + 1) * k] = B_global[mask, :]
 
         # Block-diagonal penalty (one block per level, same S)
         self.S = np.zeros((k * n_levels, k * n_levels))
         for li in range(n_levels):
-            self.S[li*k:(li+1)*k, li*k:(li+1)*k] = S_global
+            self.S[li * k : (li + 1) * k, li * k : (li + 1) * k] = S_global
 
     def basis_matrix(self) -> np.ndarray:
         return self.B
@@ -280,6 +288,7 @@ class FactorSmooth:
 # ---------------------------------------------------------------------------
 # Factor Smooth Deviations (bs='sz')
 # ---------------------------------------------------------------------------
+
 
 class FactorDeviation:
     """Smooth deviations per factor level (bs='sz').
@@ -301,7 +310,7 @@ class FactorDeviation:
         X: np.ndarray,
         group: np.ndarray,
         k: int = 10,
-        basis: str = 'cr',
+        basis: str = "cr",
     ) -> None:
         from pymgcv.smooth.bspline import PSplineBasis
         from pymgcv.smooth.cubic_spline import CubicRegressionSpline
@@ -313,13 +322,13 @@ class FactorDeviation:
         self.levels = sorted(np.unique(group).tolist())
         n_levels = len(self.levels)
 
-        if basis == 'cr':
+        if basis == "cr":
             glob = CubicRegressionSpline(self.X, k=k)
         else:
             glob = PSplineBasis(self.X, k=k)
 
-        B_glob = glob.B if hasattr(glob, 'B') else glob.basis_matrix
-        S_glob = glob.S if hasattr(glob, 'S') else glob.penalty_matrix
+        B_glob = glob.B if hasattr(glob, "B") else glob.basis_matrix
+        S_glob = glob.S if hasattr(glob, "S") else glob.penalty_matrix
 
         # Global basis + per-level deviation blocks
         B_parts = [B_glob]
@@ -329,9 +338,9 @@ class FactorDeviation:
         B_dev = np.zeros((self.n, total_dev_cols))
         for li, lv in enumerate(self.levels):
             mask = group == lv
-            B_dev[mask, li*k:(li+1)*k] = B_glob[mask, :]
+            B_dev[mask, li * k : (li + 1) * k] = B_glob[mask, :]
             dev_S = np.zeros((total_dev_cols, total_dev_cols))
-            dev_S[li*k:(li+1)*k, li*k:(li+1)*k] = S_glob
+            dev_S[li * k : (li + 1) * k, li * k : (li + 1) * k] = S_glob
             self.S_list.append(dev_S)
 
         self.B = np.hstack([B_glob, B_dev])
@@ -348,6 +357,6 @@ class FactorDeviation:
         mats = []
         for S in self.S_list:
             full = np.zeros((p, p))
-            full[:S.shape[0], :S.shape[1]] = S
+            full[: S.shape[0], : S.shape[1]] = S
             mats.append(full)
         return mats

@@ -14,8 +14,6 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 import pandas as pd
 
@@ -39,7 +37,7 @@ class RandomEffect:
     def __init__(
         self,
         X: np.ndarray | pd.Series,
-        k: Optional[int] = None,
+        k: int | None = None,
     ) -> None:
         """Initialize random effect basis.
 
@@ -55,7 +53,7 @@ class RandomEffect:
         self.n = len(X_vals)
 
         # Detect if categorical/factor
-        if X_vals.dtype.kind in ('U', 'O', 'S'):
+        if X_vals.dtype.kind in ("U", "O", "S"):
             # String/object → factor
             self.levels = np.unique(X_vals)
             self.k = len(self.levels)
@@ -105,7 +103,7 @@ class RandomEffect:
             Basis matrix of shape (n, k).
         """
         X_scaled = (X - X.mean()) / (X.std() + 1e-8)
-        B = np.column_stack([X_scaled ** i for i in range(1, k + 1)])
+        B = np.column_stack([X_scaled**i for i in range(1, k + 1)])
         return B
 
     def basis_matrix(self) -> np.ndarray:
@@ -144,4 +142,4 @@ class RandomEffect:
             x_vals = x_vals.astype(float)
             k = self.k
             x_scaled = (x_vals - x_vals.mean()) / (x_vals.std() + 1e-8)
-            return np.column_stack([x_scaled ** i for i in range(1, k + 1)])
+            return np.column_stack([x_scaled**i for i in range(1, k + 1)])

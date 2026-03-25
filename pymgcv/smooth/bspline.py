@@ -14,16 +14,14 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
-from scipy.interpolate import BSpline
 from numpy.polynomial.legendre import leggauss
-
+from scipy.interpolate import BSpline
 
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_knots(x: np.ndarray, k: int, degree: int) -> np.ndarray:
     """Build clamped B-spline knot vector with quantile interior knots.
@@ -35,18 +33,22 @@ def _make_knots(x: np.ndarray, k: int, degree: int) -> np.ndarray:
     if x_min == x_max:
         x_max = x_min + 1.0
     if n_interior <= 0:
-        return np.concatenate([
-            np.full(degree + 1, x_min),
-            np.full(degree + 1, x_max),
-        ])
+        return np.concatenate(
+            [
+                np.full(degree + 1, x_min),
+                np.full(degree + 1, x_max),
+            ]
+        )
     q = np.linspace(0, 1, n_interior + 2)[1:-1]
     interior = np.quantile(x, q)
     interior = np.clip(interior, x_min + 1e-12, x_max - 1e-12)
-    return np.concatenate([
-        np.full(degree + 1, x_min),
-        interior,
-        np.full(degree + 1, x_max),
-    ])
+    return np.concatenate(
+        [
+            np.full(degree + 1, x_min),
+            interior,
+            np.full(degree + 1, x_max),
+        ]
+    )
 
 
 def _bspline_design_matrix(x: np.ndarray, t: np.ndarray, degree: int) -> np.ndarray:
@@ -64,7 +66,7 @@ def _bspline_design_matrix(x: np.ndarray, t: np.ndarray, degree: int) -> np.ndar
     # BSpline.design_matrix added in scipy 1.7; fall back for older versions
     try:
         B_sparse = BSpline.design_matrix(x, t, degree)
-        B = B_sparse.toarray() if hasattr(B_sparse, 'toarray') else np.asarray(B_sparse)
+        B = B_sparse.toarray() if hasattr(B_sparse, "toarray") else np.asarray(B_sparse)
         return B
     except (AttributeError, TypeError):
         B = np.zeros((len(x), k))
@@ -132,6 +134,7 @@ def _bspline_integral_penalty(t: np.ndarray, degree: int, deriv_order: int = 2) 
 # BSplineBasis  (bs='bs')
 # ---------------------------------------------------------------------------
 
+
 class BSplineBasis:
     """B-spline basis with integrated-squared-derivative penalty (bs='bs').
 
@@ -152,8 +155,8 @@ class BSplineBasis:
         degree: int = 3,
         penorder: int = 2,
         # Legacy alias: order = degree + 1
-        order: Optional[int] = None,
-        knots: Optional[np.ndarray] = None,
+        order: int | None = None,
+        knots: np.ndarray | None = None,
     ) -> None:
         self.X = np.asarray(X, dtype=float).ravel()
         self.n = len(self.X)
@@ -169,17 +172,19 @@ class BSplineBasis:
             interior = np.sort(np.asarray(knots, dtype=float).ravel())
             x_min, x_max = float(self.X.min()), float(self.X.max())
             interior = interior[(interior > x_min) & (interior < x_max)]
-            t = np.concatenate([
-                np.full(degree + 1, x_min),
-                interior,
-                np.full(degree + 1, x_max),
-            ])
+            t = np.concatenate(
+                [
+                    np.full(degree + 1, x_min),
+                    interior,
+                    np.full(degree + 1, x_max),
+                ]
+            )
             self.knots = t
             self.k = len(t) - degree - 1
         else:
             self.k = k
             if k <= degree:
-                raise ValueError(f'k={k} must be > degree={degree}')
+                raise ValueError(f"k={k} must be > degree={degree}")
             self.knots = _make_knots(self.X, k, degree)
 
         self.B = _bspline_design_matrix(self.X, self.knots, degree)
@@ -197,6 +202,7 @@ class BSplineBasis:
 # ---------------------------------------------------------------------------
 # PSplineBasis  (bs='ps')
 # ---------------------------------------------------------------------------
+
 
 class PSplineBasis:
     """P-spline: uniform B-spline basis + discrete difference penalty (bs='ps').
@@ -220,7 +226,7 @@ class PSplineBasis:
         k: int = 20,
         degree: int = 3,
         m: int = 2,
-        knots: Optional[np.ndarray] = None,
+        knots: np.ndarray | None = None,
     ) -> None:
         self.X = np.asarray(X, dtype=float).ravel()
         self.n = len(self.X)
@@ -235,24 +241,30 @@ class PSplineBasis:
             # User-specified evenly-spaced or custom interior knots
             interior = np.sort(np.asarray(knots, dtype=float).ravel())
             interior = interior[(interior > x_min) & (interior < x_max)]
-            t = np.concatenate([
-                np.full(degree + 1, x_min),
-                interior,
-                np.full(degree + 1, x_max),
-            ])
+            t = np.concatenate(
+                [
+                    np.full(degree + 1, x_min),
+                    interior,
+                    np.full(degree + 1, x_max),
+                ]
+            )
             self.knots = t
             self.k = len(t) - degree - 1
         else:
             self.k = k
             if k <= degree:
-                raise ValueError(f'k={k} must be > degree={degree}')
+                raise ValueError(f"k={k} must be > degree={degree}")
             n_interior = k - degree - 1
-            interior = np.linspace(x_min, x_max, n_interior + 2)[1:-1] if n_interior > 0 else np.array([])
-            t = np.concatenate([
-                np.full(degree + 1, x_min),
-                interior,
-                np.full(degree + 1, x_max),
-            ])
+            interior = (
+                np.linspace(x_min, x_max, n_interior + 2)[1:-1] if n_interior > 0 else np.array([])
+            )
+            t = np.concatenate(
+                [
+                    np.full(degree + 1, x_min),
+                    interior,
+                    np.full(degree + 1, x_max),
+                ]
+            )
             self.knots = t
 
         self.B = _bspline_design_matrix(self.X, self.knots, degree)
@@ -274,6 +286,7 @@ class PSplineBasis:
 # Functional API (backward compat)
 # ---------------------------------------------------------------------------
 
+
 def bspline_basis_matrix(
     X: np.ndarray,
     k: int = 10,
@@ -289,4 +302,3 @@ def bspline_penalty(k: int, order: int = 4, penorder: int = 2) -> np.ndarray:
     x_dummy = np.linspace(0, 1, max(k * 3, 30))
     t = _make_knots(x_dummy, k, degree)
     return _bspline_integral_penalty(t, degree, penorder)
-

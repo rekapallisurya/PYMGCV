@@ -23,12 +23,10 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
-from pymgcv.smooth.thin_plate import ThinPlateSpline
 from pymgcv.smooth.bspline import BSplineBasis
+from pymgcv.smooth.thin_plate import ThinPlateSpline
 
 
 def _row_kron(A: np.ndarray, B: np.ndarray) -> np.ndarray:
@@ -102,8 +100,8 @@ class TensorProductSmooth:
         self,
         data: np.ndarray | dict,
         var_names: list[str],
-        k_values: Optional[list[int]] = None,
-        basis_type: str = 'tp',
+        k_values: list[int] | None = None,
+        basis_type: str = "tp",
         interaction_only: bool = False,
     ) -> None:
         """Initialize tensor product smooth.
@@ -119,7 +117,7 @@ class TensorProductSmooth:
             ValueError: If var_names is empty or data is invalid.
         """
         if not var_names:
-            raise ValueError('var_names must be non-empty')
+            raise ValueError("var_names must be non-empty")
 
         self.var_names = var_names
         self.basis_type = basis_type
@@ -131,7 +129,7 @@ class TensorProductSmooth:
         elif isinstance(data, np.ndarray):
             arrays = [np.asarray(data[:, i], dtype=float) for i in range(len(var_names))]
         else:
-            raise TypeError('data must be dict or 2D array')
+            raise TypeError("data must be dict or 2D array")
 
         n = len(arrays[0])
         if k_values is None:
@@ -144,10 +142,10 @@ class TensorProductSmooth:
         self._margin_Ps: list[np.ndarray] = []
 
         for i, (arr, k) in enumerate(zip(arrays, k_values)):
-            if basis_type == 'tp':
+            if basis_type == "tp":
                 basis_obj = ThinPlateSpline(arr.reshape(-1, 1), k=k)
                 B_i = basis_obj.basis_matrix()
-            elif basis_type == 'bs':
+            elif basis_type == "bs":
                 basis_obj = BSplineBasis(arr, k=k)
                 B_i = basis_obj.basis_matrix
             else:
@@ -160,9 +158,9 @@ class TensorProductSmooth:
 
         # Get marginal penalties
         for i, (basis_obj, B_i) in enumerate(zip(self.margins, self._margin_Bs)):
-            if hasattr(basis_obj, 'penalty_matrix_S'):
+            if hasattr(basis_obj, "penalty_matrix_S"):
                 P_i = basis_obj.penalty_matrix_S()
-            elif hasattr(basis_obj, 'penalty_matrix'):
+            elif hasattr(basis_obj, "penalty_matrix"):
                 P_i = basis_obj.penalty_matrix
             else:
                 # Fallback: second-difference penalty
@@ -228,7 +226,7 @@ class TensorProductSmooth:
         M = np.hstack(margin_Bs)  # (n, k1 + k2 + ...)
 
         # Step 3: orthogonal projection – remove the space spanned by M
-        Q_M, _ = np.linalg.qr(M, mode='reduced')
+        Q_M, _ = np.linalg.qr(M, mode="reduced")
         B_ti = B_te - Q_M @ (Q_M.T @ B_te)
         return B_ti
 
@@ -270,15 +268,16 @@ class TensorProductSmooth:
             x_new = np.asarray(new_data[var], dtype=float).ravel()
             basis_obj = self.margins[i]
 
-            if hasattr(basis_obj, 'predict'):
+            if hasattr(basis_obj, "predict"):
                 B_new_i = basis_obj.predict(x_new.reshape(-1, 1))
-            elif hasattr(basis_obj, 'basis_matrix'):
+            elif hasattr(basis_obj, "basis_matrix"):
                 # For BSplineBasis — re-evaluate at new x
                 from pymgcv.smooth.bspline import BSplineBasis
+
                 new_basis = BSplineBasis(x_new, k=self.k_values[i])
                 B_new_i = new_basis.basis_matrix
             else:
-                raise AttributeError(f'Marginal basis {i} has no predict method')
+                raise AttributeError(f"Marginal basis {i} has no predict method")
             new_Bs.append(B_new_i)
 
         if self.interaction_only:
@@ -312,8 +311,8 @@ class TensorProductT2(TensorProductSmooth):
         self,
         data: np.ndarray | dict,
         var_names: list[str],
-        k_values: Optional[list[int]] = None,
-        basis_type: str = 'tp',
+        k_values: list[int] | None = None,
+        basis_type: str = "tp",
     ) -> None:
         # Build te() basis first (same design matrix)
         super().__init__(data, var_names, k_values, basis_type, interaction_only=False)

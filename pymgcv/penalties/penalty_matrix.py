@@ -18,8 +18,6 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from scipy import linalg, sparse
 
@@ -48,9 +46,9 @@ class PenaltyMatrix:
     def __init__(
         self,
         basis_dim: int,
-        penalty_type: str = 'tprs',
-        data: Optional[np.ndarray] = None,
-        knots: Optional[np.ndarray] = None,
+        penalty_type: str = "tprs",
+        data: np.ndarray | None = None,
+        knots: np.ndarray | None = None,
     ) -> None:
         """Initialize penalty matrix constructor.
 
@@ -69,17 +67,17 @@ class PenaltyMatrix:
         self.knots = knots
 
         self.S: np.ndarray = np.zeros((basis_dim, basis_dim))
-        self.eigenvalues: Optional[np.ndarray] = None
-        self.eigenvectors: Optional[np.ndarray] = None
+        self.eigenvalues: np.ndarray | None = None
+        self.eigenvectors: np.ndarray | None = None
 
-        if self.penalty_type == 'tprs':
+        if self.penalty_type == "tprs":
             self._construct_tprs_penalty()
-        elif self.penalty_type == 'cubic-spline':
+        elif self.penalty_type == "cubic-spline":
             self._construct_spline_penalty()
-        elif self.penalty_type == 'random-effect':
+        elif self.penalty_type == "random-effect":
             self._construct_random_effect_penalty()
         else:
-            raise ValueError(f'Unknown penalty type: {penalty_type}')
+            raise ValueError(f"Unknown penalty type: {penalty_type}")
 
     def _construct_tprs_penalty(self) -> None:
         """Construct penalty for thin plate regression splines.
@@ -100,11 +98,11 @@ class PenaltyMatrix:
 
         # Construct second-difference matrix D
         D = np.eye(k) - 2 * np.eye(k, k, k=1) + np.eye(k, k, k=2)
-        
+
         # Remove last two rows (incomplete differences)
         if k > 2:
             D = D[:-2]
-        
+
         # Penalty matrix: S = D^T D
         self.S = D.T @ D
 
@@ -210,8 +208,7 @@ class PenaltyMatrixSet:
         """
         if len(lambda_vals) != self.n_penalties:
             raise ValueError(
-                f'Expected {self.n_penalties} smoothing parameters, '
-                f'got {len(lambda_vals)}'
+                f"Expected {self.n_penalties} smoothing parameters, " f"got {len(lambda_vals)}"
             )
         self.lambda_vals = np.asarray(lambda_vals, dtype=float)
 
@@ -230,7 +227,7 @@ class PenaltyMatrixSet:
         for j, (penalty, idx) in enumerate(zip(self.penalties, indices)):
             S_j = penalty.penalty_matrix()
             lambda_j = self.lambda_vals[j]
-            
+
             # Place λⱼ Sⱼ in the appropriate block
             i_start, i_stop = idx.start, idx.stop
             S_combined[i_start:i_stop, i_start:i_stop] += lambda_j * S_j
@@ -272,7 +269,7 @@ class PenaltyMatrixSet:
 
 def construct_penalty_matrix(
     basis_dim: int,
-    penalty_type: str = 'tprs',
+    penalty_type: str = "tprs",
 ) -> np.ndarray:
     """Functional API for penalty matrix construction.
 

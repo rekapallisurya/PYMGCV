@@ -21,7 +21,7 @@ def qr_solve(A: np.ndarray, b: np.ndarray) -> np.ndarray:
     Returns:
         Solution x of shape (n,) / (n, k).
     """
-    Q, R = linalg.qr(A, mode='economic')
+    Q, R = linalg.qr(A, mode="economic")
     diag_R = np.abs(np.diag(R))
     tol = max(float(diag_R[0]), 1.0) * A.shape[1] * np.finfo(float).eps * 100
     if np.all(diag_R > tol):

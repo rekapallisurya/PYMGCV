@@ -9,12 +9,13 @@ Provides plotting functions:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 try:
     import matplotlib.pyplot as plt
+
     _MATPLOTLIB_AVAILABLE = True
 except ImportError:
     _MATPLOTLIB_AVAILABLE = False
@@ -29,7 +30,7 @@ from pymgcv.api.predict import Predictor
 def plot_smooth(
     model: GAM,
     var_name: str,
-    ax: Optional[plt.Axes] = None,
+    ax: plt.Axes | None = None,
     n_grid: int = 100,
     confidence_band: bool = True,
     ci: float = 0.95,
@@ -54,13 +55,13 @@ def plot_smooth(
         >>> plt.show()
     """
     if not _MATPLOTLIB_AVAILABLE:
-        raise ImportError('matplotlib not installed. Install with: pip install matplotlib')
-    
+        raise ImportError("matplotlib not installed. Install with: pip install matplotlib")
+
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
 
     if var_name not in model.data.columns:
-        raise ValueError(f'{var_name} not in data')
+        raise ValueError(f"{var_name} not in data")
 
     # Get data range
     x_vals = model.data[var_name].values
@@ -73,24 +74,24 @@ def plot_smooth(
 
     # Predict
     predictor = Predictor(model)
-    pred_df = predictor.predict(grid_data, scale='response', ci=ci)
+    pred_df = predictor.predict(grid_data, scale="response", ci=ci)
 
     # Plot
-    ax.plot(x_grid, pred_df['fit'], 'b-', linewidth=1.5, label='Fitted smooth')
+    ax.plot(x_grid, pred_df["fit"], "b-", linewidth=1.5, label="Fitted smooth")
 
     if confidence_band:
         ax.fill_between(
             x_grid,
-            pred_df['lwr'],
-            pred_df['upr'],
+            pred_df["lwr"],
+            pred_df["upr"],
             alpha=0.3,
-            color='blue',
-            label=f'{int(ci*100)}% CI',
+            color="blue",
+            label=f"{int(ci*100)}% CI",
         )
 
     ax.set_xlabel(var_name)
-    ax.set_ylabel('Effect')
-    ax.set_title(f'Smooth term: {var_name}')
+    ax.set_ylabel("Effect")
+    ax.set_title(f"Smooth term: {var_name}")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -101,9 +102,9 @@ def plot_smooth_2d(
     model: GAM,
     var1: str,
     var2: str,
-    ax: Optional[plt.Axes] = None,
+    ax: plt.Axes | None = None,
     n_grid: int = 50,
-    cmap: str = 'viridis',
+    cmap: str = "viridis",
 ) -> plt.Axes:
     """Plot 2D tensor product smooth.
 
@@ -138,24 +139,24 @@ def plot_smooth_2d(
     grid_data[var2] = X2.ravel()
 
     # Predict
-    pred = model.predict(grid_data, scale='response')
+    pred = model.predict(grid_data, scale="response")
     Z = pred.reshape((n_grid, n_grid))
 
     # Plot
     im = ax.contourf(X1, X2, Z, levels=20, cmap=cmap)
-    ax.contour(X1, X2, Z, levels=10, colors='black', alpha=0.3, linewidths=0.5)
+    ax.contour(X1, X2, Z, levels=10, colors="black", alpha=0.3, linewidths=0.5)
     ax.set_xlabel(var1)
     ax.set_ylabel(var2)
-    ax.set_title(f'Smooth term: {var1} × {var2}')
+    ax.set_title(f"Smooth term: {var1} × {var2}")
 
-    plt.colorbar(im, ax=ax, label='Effect')
+    plt.colorbar(im, ax=ax, label="Effect")
 
     return ax
 
 
 def plot_residuals(
     model: GAM,
-    ax_array: Optional[np.ndarray] = None,
+    ax_array: np.ndarray | None = None,
 ) -> np.ndarray:
     """Plot residual diagnostics (4-panel).
 
@@ -171,37 +172,42 @@ def plot_residuals(
         ax_array = ax_array.ravel()
 
     # Compute residuals
-    fitted = model.fitted_values if hasattr(model, 'fitted_values') else model.predict(model.data, scale='response')
-    residuals = model.data[model.formula.split('~')[0].strip()].values - fitted
+    fitted = (
+        model.fitted_values
+        if hasattr(model, "fitted_values")
+        else model.predict(model.data, scale="response")
+    )
+    residuals = model.data[model.formula.split("~")[0].strip()].values - fitted
 
     # Panel 1: Residuals vs Fitted
     ax_array[0].scatter(fitted, residuals, alpha=0.5, s=20)
-    ax_array[0].axhline(y=0, color='r', linestyle='--')
-    ax_array[0].set_xlabel('Fitted values')
-    ax_array[0].set_ylabel('Residuals')
-    ax_array[0].set_title('Residuals vs Fitted')
+    ax_array[0].axhline(y=0, color="r", linestyle="--")
+    ax_array[0].set_xlabel("Fitted values")
+    ax_array[0].set_ylabel("Residuals")
+    ax_array[0].set_title("Residuals vs Fitted")
     ax_array[0].grid(True, alpha=0.3)
 
     # Panel 2: Q-Q plot
     from scipy import stats as sp_stats
-    sp_stats.probplot(residuals, dist='norm', plot=ax_array[1])
-    ax_array[1].set_title('Normal Q-Q Plot')
+
+    sp_stats.probplot(residuals, dist="norm", plot=ax_array[1])
+    ax_array[1].set_title("Normal Q-Q Plot")
     ax_array[1].grid(True, alpha=0.3)
 
     # Panel 3: Scale-Location
     std_residuals = np.sqrt(np.abs(residuals / np.std(residuals)))
     ax_array[2].scatter(fitted, std_residuals, alpha=0.5, s=20)
-    ax_array[2].set_xlabel('Fitted values')
-    ax_array[2].set_ylabel('√|Standardized residuals|')
-    ax_array[2].set_title('Scale-Location')
+    ax_array[2].set_xlabel("Fitted values")
+    ax_array[2].set_ylabel("√|Standardized residuals|")
+    ax_array[2].set_title("Scale-Location")
     ax_array[2].grid(True, alpha=0.3)
 
     # Panel 4: Histogram of residuals
-    ax_array[3].hist(residuals, bins=30, edgecolor='black', alpha=0.7)
-    ax_array[3].set_xlabel('Residuals')
-    ax_array[3].set_ylabel('Frequency')
-    ax_array[3].set_title('Histogram of Residuals')
-    ax_array[3].grid(True, alpha=0.3, axis='y')
+    ax_array[3].hist(residuals, bins=30, edgecolor="black", alpha=0.7)
+    ax_array[3].set_xlabel("Residuals")
+    ax_array[3].set_ylabel("Frequency")
+    ax_array[3].set_title("Histogram of Residuals")
+    ax_array[3].grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
 
@@ -223,8 +229,8 @@ def plot_diagnostics(
 
 def plot_gam(
     model: GAM,
-    which: str = 'all',
-    var_names: Optional[list[str]] = None,
+    which: str = "all",
+    var_names: list[str] | None = None,
 ) -> None:
     """Plot all smooth terms of GAM.
 
@@ -234,20 +240,21 @@ def plot_gam(
         var_names: Specific variables to plot (default: all).
     """
     if not _MATPLOTLIB_AVAILABLE:
-        raise ImportError('matplotlib not installed. Install with: pip install matplotlib')
-    
+        raise ImportError("matplotlib not installed. Install with: pip install matplotlib")
+
     if not model.fitted:
-        raise RuntimeError('Model not fitted')
+        raise RuntimeError("Model not fitted")
 
     # Extract smooth variable names from formula
     import re
-    smooth_pattern = r's\(([^)]+)\)'
+
+    smooth_pattern = r"s\(([^)]+)\)"
     matches = re.findall(smooth_pattern, model.formula)
 
     if var_names is None:
         var_names = matches
 
-    if which in ['smooth', 'all']:
+    if which in ["smooth", "all"]:
         n_smooths = len(var_names)
         n_cols = min(2, n_smooths)
         n_rows = (n_smooths + n_cols - 1) // n_cols
@@ -265,6 +272,6 @@ def plot_gam(
         plt.tight_layout()
         plt.show()
 
-    if which in ['residuals', 'all']:
+    if which in ["residuals", "all"]:
         plot_residuals(model)
         plt.show()

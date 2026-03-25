@@ -5,7 +5,7 @@ It balances model fit and complexity without requiring knowledge of σ².
 
 Theory:
     GCV(λ) = n·D(λ) / (n - DoF(λ))²
-    
+
     where:
     - D(λ) = deviance (sum of squared residuals for Gaussian)
     - DoF(λ) = trace(A) = effective degrees of freedom
@@ -27,8 +27,6 @@ Module exports:
 """
 
 from __future__ import annotations
-
-from typing import Optional
 
 import numpy as np
 from scipy import linalg
@@ -58,8 +56,8 @@ class GCVCriterion:
         X: np.ndarray,
         y: np.ndarray,
         S_list: list[np.ndarray],
-        lambda_vec: Optional[np.ndarray] = None,
-        offset: Optional[np.ndarray] = None,
+        lambda_vec: np.ndarray | None = None,
+        offset: np.ndarray | None = None,
         tol: float = 1e-10,
     ) -> None:
         """Initialize GCV criterion.
@@ -80,16 +78,15 @@ class GCVCriterion:
         self.n, self.p = self.X.shape
 
         if len(self.y) != self.n:
-            raise ValueError(f'y length {len(self.y)} != X rows {self.n}')
+            raise ValueError(f"y length {len(self.y)} != X rows {self.n}")
 
         self.S_list = [np.asarray(S, dtype=np.float64) for S in S_list]
-        
+
         # Validate penalty matrix dimensions
         for i, S in enumerate(self.S_list):
             if S.shape != (self.p, self.p):
                 raise ValueError(
-                    f'Penalty matrix {i} has shape {S.shape}, '
-                    f'expected ({self.p}, {self.p})'
+                    f"Penalty matrix {i} has shape {S.shape}, " f"expected ({self.p}, {self.p})"
                 )
 
         # Initialize smoothing parameters
@@ -100,27 +97,24 @@ class GCVCriterion:
 
         if len(self.lambda_vec) != len(self.S_list):
             raise ValueError(
-                f'lambda_vec length {len(self.lambda_vec)} '
-                f'!= # penalties {len(self.S_list)}'
+                f"lambda_vec length {len(self.lambda_vec)} " f"!= # penalties {len(self.S_list)}"
             )
 
         # Offset vector
         self.offset = (
-            np.asarray(offset, dtype=np.float64)
-            if offset is not None
-            else np.zeros(self.n)
+            np.asarray(offset, dtype=np.float64) if offset is not None else np.zeros(self.n)
         )
-        
+
         if len(self.offset) != self.n:
-            raise ValueError(f'offset length {len(self.offset)} != X rows {self.n}')
+            raise ValueError(f"offset length {len(self.offset)} != X rows {self.n}")
 
         self.tol = float(tol)
         self.n_smooth = len(S_list)
 
         # Cache for efficiency
-        self._XTX: Optional[np.ndarray] = None
-        self._S_combined: Optional[np.ndarray] = None
-        self._A_trace: Optional[float] = None
+        self._XTX: np.ndarray | None = None
+        self._S_combined: np.ndarray | None = None
+        self._A_trace: float | None = None
 
     def set_lambda(self, lambda_vec: np.ndarray) -> None:
         """Update smoothing parameters and clear cache.
@@ -165,15 +159,15 @@ class GCVCriterion:
         try:
             XTX = self._compute_XTX()
             S_lambda = self._construct_combined_penalty()
-            
+
             # Form system matrix
             H = XTX + S_lambda
-            
+
             # Compute trace: trace(X(X'X + Sλ)⁻¹X')
             # = trace((X'X + Sλ)⁻¹ X'X)
             H_inv = linalg.inv(H)
             trace_dof = np.trace(H_inv @ XTX)
-            
+
             return float(np.clip(trace_dof, 0, self.p))
         except linalg.LinAlgError as e:
             # Return fallback if matrix is singular
@@ -193,10 +187,10 @@ class GCVCriterion:
         """
         eta = self.X @ beta + self.offset
         residuals = self.y - eta
-        dev = np.sum(residuals ** 2)
+        dev = np.sum(residuals**2)
         return float(dev)
 
-    def gcv(self, beta: Optional[np.ndarray] = None) -> float:
+    def gcv(self, beta: np.ndarray | None = None) -> float:
         """Compute GCV score.
 
         GCV(λ) = n·D(λ) / (n - DoF(λ))²
@@ -220,7 +214,7 @@ class GCVCriterion:
         denom_dof = max(self.n - dof, 0.01)
 
         # GCV = n * D / (n - DoF)²
-        gcv_score = self.n * dev / (denom_dof ** 2)
+        gcv_score = self.n * dev / (denom_dof**2)
 
         return float(gcv_score)
 
@@ -263,7 +257,7 @@ def compute_gcv(
     beta: np.ndarray,
     S_list: list[np.ndarray],
     lambda_vec: np.ndarray,
-    offset: Optional[np.ndarray] = None,
+    offset: np.ndarray | None = None,
 ) -> float:
     """Compute GCV score for given β and λ.
 
@@ -296,8 +290,8 @@ def compare_gcv_scores(
         (best_model_name, best_gcv_score)
     """
     if not scores:
-        raise ValueError('No scores provided')
-    
+        raise ValueError("No scores provided")
+
     best_name = min(scores, key=lambda k: scores[k])
     best_score = scores[best_name]
     return best_name, best_score

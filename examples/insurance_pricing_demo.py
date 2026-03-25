@@ -32,14 +32,14 @@ References:
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from pymgcv.api.gam import GAM
-from pymgcv.api.summary import summary
+from pymgcv.api.plot import plot_smooth
 from pymgcv.api.predict import Predictor
-from pymgcv.api.plot import plot_smooth, plot_gam
+from pymgcv.api.summary import summary
 
 
 def generate_synthetic_insurance_data(
@@ -103,30 +103,30 @@ def generate_synthetic_insurance_data(
         if n_claims > 0:
             # Gamma shape and scale to get mean = mu and variance = φ*μ^p
             gamma_mean = mu_policy[i]
-            gamma_var = phi * (gamma_mean ** p_param)
+            gamma_var = phi * (gamma_mean**p_param)
             gamma_scale = gamma_var / gamma_mean
             gamma_shape = gamma_mean / gamma_scale
 
-            severities = np.random.gamma(
-                shape=gamma_shape, scale=gamma_scale, size=n_claims
-            )
+            severities = np.random.gamma(shape=gamma_shape, scale=gamma_scale, size=n_claims)
             claims[i] = np.sum(severities)
 
     # Create DataFrame
-    data = pd.DataFrame({
-        'age': age,
-        'power': power,
-        'bonus_malus': bm,
-        'exposure': exposure,
-        'claims': np.maximum(claims, 0),  # Ensure non-negative
-    })
+    data = pd.DataFrame(
+        {
+            "age": age,
+            "power": power,
+            "bonus_malus": bm,
+            "exposure": exposure,
+            "claims": np.maximum(claims, 0),  # Ensure non-negative
+        }
+    )
 
     return data
 
 
 def fit_insurance_model(
     data: pd.DataFrame,
-    formula: str = 'claims ~ s(age, k=10) + s(power, k=10) + offset(log(exposure))',
+    formula: str = "claims ~ s(age, k=10) + s(power, k=10) + offset(log(exposure))",
 ) -> GAM:
     """Fit Tweedie GAM for insurance claims.
 
@@ -137,7 +137,7 @@ def fit_insurance_model(
     Returns:
         Fitted GAM.
     """
-    model = GAM(formula, family='tweedie')
+    model = GAM(formula, family="tweedie")
     model.fit(data, verbose=True)
     return model
 
@@ -157,69 +157,77 @@ def pricing_recommendations(
     """
     # Predict expected claims per unit exposure
     predictor = Predictor(model)
-    pred_df = predictor.predict(newdata, scale='response')
+    pred_df = predictor.predict(newdata, scale="response")
 
     # Add policy details
     result = newdata.copy()
-    result['expected_claims'] = pred_df['fit']
-    result['se_claims'] = pred_df['se']
+    result["expected_claims"] = pred_df["fit"]
+    result["se_claims"] = pred_df["se"]
 
     # Suggested premium: expected claims + loading
     loading_factor = 1.15  # 15% loading for expenses/profit
-    result['suggested_premium'] = result['expected_claims'] * loading_factor
+    result["suggested_premium"] = result["expected_claims"] * loading_factor
 
     # Confidence bounds
-    result['premium_lower'] = (result['expected_claims'] - 1.96 * result['se_claims']) * loading_factor
-    result['premium_upper'] = (result['expected_claims'] + 1.96 * result['se_claims']) * loading_factor
+    result["premium_lower"] = (
+        result["expected_claims"] - 1.96 * result["se_claims"]
+    ) * loading_factor
+    result["premium_upper"] = (
+        result["expected_claims"] + 1.96 * result["se_claims"]
+    ) * loading_factor
 
     return result
 
 
 def main():
     """Run insurance pricing demo."""
-    print('=' * 70)
-    print('Insurance Claims Pricing with pymgcv Tweedie GAM')
-    print('=' * 70)
+    print("=" * 70)
+    print("Insurance Claims Pricing with pymgcv Tweedie GAM")
+    print("=" * 70)
     print()
 
     # 1. Generate data
-    print('Step 1: Generating synthetic insurance data...')
+    print("Step 1: Generating synthetic insurance data...")
     data = generate_synthetic_insurance_data(n=500, seed=42)
-    print(f'  Generated {len(data)} policies')
+    print(f"  Generated {len(data)} policies")
     print(f"  Total claims: ${data['claims'].sum():.2f}")
     print(f"  Average claim: ${data['claims'].mean():.2f}")
-    print(f"  Non-zero claims: {(data['claims'] > 0).sum()} ({100*(data['claims'] > 0).mean():.1f}%)")
+    print(
+        f"  Non-zero claims: {(data['claims'] > 0).sum()} ({100*(data['claims'] > 0).mean():.1f}%)"
+    )
     print()
 
     # 2. Fit model
-    print('Step 2: Fitting Tweedie GAM...')
-    formula = 'claims ~ s(age, k=10) + s(power, k=10)'
+    print("Step 2: Fitting Tweedie GAM...")
+    formula = "claims ~ s(age, k=10) + s(power, k=10)"
     model = fit_insurance_model(data, formula=formula)
     print()
 
     # 3. Model summary
-    print('Step 3: Model Summary')
-    print('-' * 70)
+    print("Step 3: Model Summary")
+    print("-" * 70)
     print(summary(model))
     print()
 
     # 4. Predictions on new policies
-    print('Step 4: Pricing recommendations for new policies')
-    print('-' * 70)
+    print("Step 4: Pricing recommendations for new policies")
+    print("-" * 70)
 
-    newdata = pd.DataFrame({
-        'age': [25, 45, 65],
-        'power': [100, 150, 200],
-        'bonus_malus': [1.0, 1.0, 1.0],
-        'exposure': [1.0, 1.0, 1.0],
-        'claims': [0, 0, 0],  # Will be ignored in prediction
-    })
+    newdata = pd.DataFrame(
+        {
+            "age": [25, 45, 65],
+            "power": [100, 150, 200],
+            "bonus_malus": [1.0, 1.0, 1.0],
+            "exposure": [1.0, 1.0, 1.0],
+            "claims": [0, 0, 0],  # Will be ignored in prediction
+        }
+    )
 
     pricing = pricing_recommendations(model, newdata)
 
-    print('\nRisk profiles and pricing recommendations:')
-    print('Age | Power | Expected Claims | Suggested Premium')
-    print('-' * 50)
+    print("\nRisk profiles and pricing recommendations:")
+    print("Age | Power | Expected Claims | Suggested Premium")
+    print("-" * 50)
     for idx, row in pricing.iterrows():
         print(
             f'{row["age"]:3.0f} | {row["power"]:5.0f} | '
@@ -229,17 +237,17 @@ def main():
     print()
 
     # 5. Visualizations
-    print('Step 5: Visualizing smooth terms (generated plots)')
-    print('-' * 70)
+    print("Step 5: Visualizing smooth terms (generated plots)")
+    print("-" * 70)
     try:
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-        plot_smooth(model, 'age', ax=axes[0])
-        plot_smooth(model, 'power', ax=axes[1])
+        plot_smooth(model, "age", ax=axes[0])
+        plot_smooth(model, "power", ax=axes[1])
 
         plt.tight_layout()
-        plt.savefig('insurance_smooth_terms.png', dpi=100)
-        print('  Saved: insurance_smooth_terms.png')
+        plt.savefig("insurance_smooth_terms.png", dpi=100)
+        print("  Saved: insurance_smooth_terms.png")
 
         # Partial dependence heatmap (simplified)
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -252,41 +260,43 @@ def main():
         pred_grid = np.zeros_like(A)
         for i in range(len(age_grid)):
             for j in range(len(power_grid)):
-                grid_data = pd.DataFrame({
-                    'age': [A[j, i]],
-                    'power': [P[j, i]],
-                    'bonus_malus': [1.0],
-                    'exposure': [1.0],
-                    'claims': [0],
-                })
-                pred_grid[j, i] = model.predict(grid_data, scale='response')[0]
+                grid_data = pd.DataFrame(
+                    {
+                        "age": [A[j, i]],
+                        "power": [P[j, i]],
+                        "bonus_malus": [1.0],
+                        "exposure": [1.0],
+                        "claims": [0],
+                    }
+                )
+                pred_grid[j, i] = model.predict(grid_data, scale="response")[0]
 
-        im = ax.contourf(A, P, pred_grid, levels=20, cmap='viridis')
-        ax.set_xlabel('Driver Age')
-        ax.set_ylabel('Car Power (kW)')
-        ax.set_title('Expected Claims Heatmap: Age × Power')
-        plt.colorbar(im, ax=ax, label='Expected Claims ($)')
-        plt.savefig('insurance_heatmap.png', dpi=100)
-        print('  Saved: insurance_heatmap.png')
+        im = ax.contourf(A, P, pred_grid, levels=20, cmap="viridis")
+        ax.set_xlabel("Driver Age")
+        ax.set_ylabel("Car Power (kW)")
+        ax.set_title("Expected Claims Heatmap: Age × Power")
+        plt.colorbar(im, ax=ax, label="Expected Claims ($)")
+        plt.savefig("insurance_heatmap.png", dpi=100)
+        print("  Saved: insurance_heatmap.png")
 
     except Exception as e:
-        print(f'  Could not generate plots: {e}')
+        print(f"  Could not generate plots: {e}")
 
     # 6. Model diagnostics
     print()
-    print('Step 6: Model Diagnostics')
-    print('-' * 70)
-    print(f'  Effective DoF: {model.edf:.2f}')
-    print(f'  AIC: {model.aic:.2f}' if model.aic else '  AIC: N/A')
-    if hasattr(model, 'deviance') and hasattr(model, 'null_deviance'):
+    print("Step 6: Model Diagnostics")
+    print("-" * 70)
+    print(f"  Effective DoF: {model.edf:.2f}")
+    print(f"  AIC: {model.aic:.2f}" if model.aic else "  AIC: N/A")
+    if hasattr(model, "deviance") and hasattr(model, "null_deviance"):
         dev_expl = 100 * (1 - model.deviance / model.null_deviance)
-        print(f'  Deviance Explained: {dev_expl:.1f}%')
+        print(f"  Deviance Explained: {dev_expl:.1f}%")
 
     print()
-    print('=' * 70)
-    print('Insurance pricing demo complete!')
-    print('=' * 70)
+    print("=" * 70)
+    print("Insurance pricing demo complete!")
+    print("=" * 70)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

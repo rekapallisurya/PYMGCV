@@ -14,22 +14,24 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 try:
     import jax
     import jax.numpy as jnp
     from jax import grad, jit, vmap
+
     _JAX_AVAILABLE = True
 except ImportError:
     _JAX_AVAILABLE = False
+
     # Fallback: define jit, grad, vmap as no-ops
     def jit(func):  # type: ignore
         return func
+
     def grad(func):  # type: ignore
         return func
+
     def vmap(func):  # type: ignore
         return func
 
@@ -41,16 +43,16 @@ def device_info() -> dict:
         Dict with device information.
     """
     if not _JAX_AVAILABLE:
-        return {'available': False, 'message': 'JAX not installed'}
+        return {"available": False, "message": "JAX not installed"}
 
     devices = jax.devices()
     device_types = [str(d.device_kind) for d in devices]
-    
+
     return {
-        'available': True,
-        'num_devices': len(devices),
-        'device_types': device_types,
-        'default_device': str(jax.devices()[0]),
+        "available": True,
+        "num_devices": len(devices),
+        "device_types": device_types,
+        "default_device": str(jax.devices()[0]),
     }
 
 
@@ -104,6 +106,7 @@ def jax_pirls_iteration(
     if not _JAX_AVAILABLE:
         # Fallback to NumPy
         from scipy import linalg
+
         XtWX = X.T @ (X * w[:, np.newaxis])
         Xtwz = X.T @ (w * z)
         A = XtWX + S
@@ -127,6 +130,7 @@ def jax_pirls_iteration(
     except:
         # Singular system fallback
         from scipy import linalg
+
         beta_new = linalg.lstsq(np.asarray(A), np.asarray(Xtwz))[0]
 
     return beta_new
@@ -184,6 +188,7 @@ def jax_gradient_function(
             grad_ssr = -2 * X.T @ residuals
             grad_penalty = 2 * S @ beta
             return grad_ssr + grad_penalty
+
         return grad_func_numpy
 
     # JAX version
@@ -216,7 +221,7 @@ def enable_gpu() -> bool:
         return False
 
     devices = device_info()
-    if 'gpu' in str(devices.get('device_types', [])).lower():
+    if "gpu" in str(devices.get("device_types", [])).lower():
         return True
     return False
 
@@ -225,14 +230,16 @@ def summary() -> str:
     """Return JAX acceleration status."""
     info = device_info()
     lines = [
-        'JAX Acceleration Status',
-        '=======================',
+        "JAX Acceleration Status",
+        "=======================",
         f"Available: {info.get('available', False)}",
     ]
-    if info.get('available'):
-        lines.extend([
-            f"Devices: {info.get('num_devices', 0)}",
-            f"Types: {info.get('device_types', [])}",
-            f"Default: {info.get('default_device', 'unknown')}",
-        ])
-    return '\n'.join(lines)
+    if info.get("available"):
+        lines.extend(
+            [
+                f"Devices: {info.get('num_devices', 0)}",
+                f"Types: {info.get('device_types', [])}",
+                f"Default: {info.get('default_device', 'unknown')}",
+            ]
+        )
+    return "\n".join(lines)

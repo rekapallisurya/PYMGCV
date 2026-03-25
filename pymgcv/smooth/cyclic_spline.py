@@ -15,8 +15,6 @@ References:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 
@@ -35,7 +33,7 @@ class CyclicSpline:
         self,
         X: np.ndarray,
         k: int = 10,
-        knots: Optional[np.ndarray] = None,
+        knots: np.ndarray | None = None,
     ) -> None:
         """Initialize cyclic spline.
 

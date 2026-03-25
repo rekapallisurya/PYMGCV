@@ -13,9 +13,9 @@ Warning: R validation requires R output files in tests/data/mgcv_reference/
 
 from __future__ import annotations
 
-import pytest
 import numpy as np
 import pandas as pd
+import pytest
 
 from pymgcv.api.gam import GAM
 
@@ -51,10 +51,10 @@ class TestValidationVsMGCV:
         x1 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.random.normal(0, 0.1, n)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
         # Fit pymgcv
-        model = GAM('y ~ s(x1)', family='gaussian')
+        model = GAM("y ~ s(x1)", family="gaussian")
         model.fit(data, verbose=False)
 
         # Check that model fitted
@@ -63,7 +63,7 @@ class TestValidationVsMGCV:
         assert len(model.beta) > 0
 
         # Check fitted values are reasonable
-        fitted = model.predict(data, scale='response')
+        fitted = model.predict(data, scale="response")
         assert np.all(np.isfinite(fitted))
         assert fitted.shape == (n,)
 
@@ -91,18 +91,18 @@ class TestValidationVsMGCV:
         mu = np.exp(eta)
         y = np.random.poisson(mu)
 
-        data = pd.DataFrame({'x1': x1, 'x2': x2, 'y': y})
+        data = pd.DataFrame({"x1": x1, "x2": x2, "y": y})
 
         # Fit pymgcv
-        model = GAM('y ~ s(x1) + s(x2)', family='poisson')
+        model = GAM("y ~ s(x1) + s(x2)", family="poisson")
         model.fit(data, verbose=False)
 
         assert model.fitted
         assert model.beta is not None
 
         # Check predictions are positive
-        fitted = model.predict(data, scale='response')
-        assert np.all(fitted > 0), 'Poisson predictions must be positive'
+        fitted = model.predict(data, scale="response")
+        assert np.all(fitted > 0), "Poisson predictions must be positive"
 
         # Check EDF is reasonable
         assert model.edf is not None
@@ -126,17 +126,17 @@ class TestValidationVsMGCV:
         mu = np.exp(eta)
         y = np.random.gamma(shape=shape, scale=mu / shape)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
         # Fit pymgcv
-        model = GAM('y ~ s(x1)', family='gamma')
+        model = GAM("y ~ s(x1)", family="gamma")
         model.fit(data, verbose=False)
 
         assert model.fitted
 
         # Check predictions are positive
-        fitted = model.predict(data, scale='response')
-        assert np.all(fitted > 0), 'Gamma predictions must be positive'
+        fitted = model.predict(data, scale="response")
+        assert np.all(fitted > 0), "Gamma predictions must be positive"
 
     def test_tweedie_gam(self, tolerance):
         """Test Tweedie GAM: y ~ s(x1) with compound Poisson-Gamma
@@ -162,17 +162,17 @@ class TestValidationVsMGCV:
             if freq > 0:
                 y[i] = freq * np.random.gamma(shape=2, scale=mu[i] / 2)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
         # Fit pymgcv
-        model = GAM('y ~ s(x1)', family='tweedie')
+        model = GAM("y ~ s(x1)", family="tweedie")
         model.fit(data, verbose=False)
 
         assert model.fitted
 
         # Check predictions
-        fitted = model.predict(data, scale='response')
-        assert np.all(fitted > 0), 'Tweedie predictions should be positive'
+        fitted = model.predict(data, scale="response")
+        assert np.all(fitted > 0), "Tweedie predictions should be positive"
 
     def test_coefficient_stability(self, tolerance):
         """Test that repeated fits give same coefficients."""
@@ -181,20 +181,22 @@ class TestValidationVsMGCV:
         x1 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.random.normal(0, 0.1, n)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
         # Fit twice
-        model1 = GAM('y ~ s(x1)', family='gaussian')
+        model1 = GAM("y ~ s(x1)", family="gaussian")
         model1.fit(data, verbose=False)
 
-        model2 = GAM('y ~ s(x1)', family='gaussian')
+        model2 = GAM("y ~ s(x1)", family="gaussian")
         model2.fit(data, verbose=False)
 
         # Coefficients should match
         np.testing.assert_allclose(
-            model1.beta, model2.beta,
-            rtol=1e-5, atol=1e-8,
-            err_msg='Repeated fits should give identical coefficients'
+            model1.beta,
+            model2.beta,
+            rtol=1e-5,
+            atol=1e-8,
+            err_msg="Repeated fits should give identical coefficients",
         )
 
     def test_smoothing_parameter_optimization(self, tolerance):
@@ -204,9 +206,9 @@ class TestValidationVsMGCV:
         x1 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.random.normal(0, 0.15, n)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
-        model = GAM('y ~ s(x1)', family='gaussian')
+        model = GAM("y ~ s(x1)", family="gaussian")
         model.fit(data, verbose=False)
 
         # Smoothing parameters should be optimized (not extreme values)
@@ -224,23 +226,23 @@ class TestValidationVsMGCV:
         x1 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
-        model = GAM('y ~ s(x1)', family='gaussian')
+        model = GAM("y ~ s(x1)", family="gaussian")
         model.fit(data, verbose=False)
 
         # Predict outside training range
         x_test = np.array([[-0.5], [1.5]])
-        data_test = pd.DataFrame({'x1': x_test.ravel()})
+        data_test = pd.DataFrame({"x1": x_test.ravel()})
 
         # Should not crash
         try:
-            pred = model.predict(data_test, scale='response')
+            pred = model.predict(data_test, scale="response")
             assert len(pred) == 2
             assert np.all(np.isfinite(pred))
         except Exception as e:
             # Extrapolation may not be supported
-            print(f'Extrapolation not supported: {e}')
+            print(f"Extrapolation not supported: {e}")
 
 
 class TestNumericalAccuracy:
@@ -257,10 +259,10 @@ class TestNumericalAccuracy:
 
         y = np.random.normal(size=n)
 
-        data = pd.DataFrame({'x1': x1, 'x2': x2, 'y': y})
+        data = pd.DataFrame({"x1": x1, "x2": x2, "y": y})
 
         # Should handle gracefully (either error or warning)
-        model = GAM('y ~ s(x1) + s(x2)', family='gaussian')
+        model = GAM("y ~ s(x1) + s(x2)", family="gaussian")
 
         try:
             model.fit(data, verbose=False)
@@ -278,9 +280,9 @@ class TestNumericalAccuracy:
         x1 = np.linspace(0, 1, n)
         y = np.sin(2 * np.pi * x1) + np.random.normal(0, 0.1, n)
 
-        data = pd.DataFrame({'x1': x1, 'y': y})
+        data = pd.DataFrame({"x1": x1, "y": y})
 
-        model = GAM('y ~ s(x1)', family='gaussian')
+        model = GAM("y ~ s(x1)", family="gaussian")
         model.fit(data, verbose=False)
 
         # Should still converge
@@ -288,5 +290,5 @@ class TestNumericalAccuracy:
         assert np.all(np.isfinite(model.beta))
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

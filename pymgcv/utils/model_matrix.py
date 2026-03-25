@@ -12,16 +12,14 @@ Module exports:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 import pandas as pd
 
-from pymgcv.utils.formula_parser import FormulaParser, ParametricSpec, SmoothSpec
-from pymgcv.smooth.thin_plate import ThinPlateSpline
-from pymgcv.smooth.tensor_product import TensorProductSmooth, TensorProductT2
 from pymgcv.smooth.cyclic_spline import CyclicSpline
 from pymgcv.smooth.random_effect import RandomEffect
+from pymgcv.smooth.tensor_product import TensorProductSmooth, TensorProductT2
+from pymgcv.smooth.thin_plate import ThinPlateSpline
+from pymgcv.utils.formula_parser import FormulaParser, SmoothSpec
 
 
 class ModelMatrix:
@@ -53,7 +51,7 @@ class ModelMatrix:
         formula: str,
         center: bool = True,
         scale: bool = False,
-        knots: Optional[dict] = None,
+        knots: dict | None = None,
         drop_intercept: bool = False,
     ) -> None:
         """Initialize and construct design matrix.
@@ -74,11 +72,11 @@ class ModelMatrix:
         if isinstance(data, dict):
             data = pd.DataFrame(data)
         elif not isinstance(data, pd.DataFrame):
-            raise TypeError('data must be DataFrame or dict')
+            raise TypeError("data must be DataFrame or dict")
 
         self.data = data
         self.n_obs = len(data)
-        
+
         # Parse formula
         self.formula_parser = FormulaParser(formula)
         self.response_var = self.formula_parser.response
@@ -97,16 +95,16 @@ class ModelMatrix:
         self.scale = scale
         self.knots: dict = knots or {}
         self.drop_intercept = drop_intercept
-        self.center_mean: Optional[np.ndarray] = None
-        self.scale_std: Optional[np.ndarray] = None
+        self.center_mean: np.ndarray | None = None
+        self.scale_std: np.ndarray | None = None
 
         # Construct design matrix
         self.X: np.ndarray = np.zeros((self.n_obs, 1))  # placeholder
         self.column_names: list[str] = []
         self.smooth_bases: list = []  # can hold ThinPlateSpline, TensorProductSmooth, etc.
         self.smooth_specs_used: list[SmoothSpec] = []  # matches smooth_bases order
-        self.smooth_by_levels: list[Optional[list]] = []  # by-variable levels per smooth
-        self.param_indices: Optional[slice] = None
+        self.smooth_by_levels: list[list | None] = []  # by-variable levels per smooth
+        self.param_indices: slice | None = None
         self.smooth_indices: list[slice] = []
 
         self._construct()
@@ -135,9 +133,7 @@ class ModelMatrix:
                 self.smooth_bases.append(basis_obj)
                 self.smooth_specs_used.append(smooth_spec)
                 self.smooth_by_levels.append(by_levels)
-                self.smooth_indices.append(
-                    slice(start_col, start_col + X_smooth.shape[1])
-                )
+                self.smooth_indices.append(slice(start_col, start_col + X_smooth.shape[1]))
 
         # Concatenate and validate
         if X_parts:
@@ -145,7 +141,7 @@ class ModelMatrix:
         else:
             # Fallback: intercept only
             self.X = np.ones((self.n_obs, 1))
-            col_names = ['Intercept']
+            col_names = ["Intercept"]
 
         self.column_names = col_names
         self.p_cols = self.X.shape[1]
@@ -175,7 +171,7 @@ class ModelMatrix:
         if not self.drop_intercept:
             intercept_col = np.ones(self.n_obs)
             X_cols.append(intercept_col)
-            col_names.append('(Intercept)')
+            col_names.append("(Intercept)")
 
         if not self.formula_parser.parametric_terms:
             return np.column_stack(X_cols) if X_cols else np.zeros((self.n_obs, 1)), col_names
@@ -187,24 +183,24 @@ class ModelMatrix:
                 x2 = self.data[spec.variables[1]].values.astype(float)
                 x_int = x1 * x2
                 X_cols.append(x_int)
-                col_names.append(' * '.join(spec.variables))
+                col_names.append(" * ".join(spec.variables))
             else:
                 # Single variable or function
                 var = spec.variables[0]
-                
+
                 # Check if function was applied
                 if spec.label in self.formula_parser.function_terms:
                     func_str = self.formula_parser.function_terms[spec.label]
                     # Parse and apply function (log, exp, etc.)
-                    if func_str.startswith('log('):
+                    if func_str.startswith("log("):
                         x = np.log(self.data[var].values.astype(float))
-                        col_name = f'log({var})'
-                    elif func_str.startswith('exp('):
+                        col_name = f"log({var})"
+                    elif func_str.startswith("exp("):
                         x = np.exp(self.data[var].values.astype(float))
-                        col_name = f'exp({var})'
-                    elif func_str.startswith('sqrt('):
+                        col_name = f"exp({var})"
+                    elif func_str.startswith("sqrt("):
                         x = np.sqrt(self.data[var].values.astype(float))
-                        col_name = f'sqrt({var})'
+                        col_name = f"sqrt({var})"
                     else:
                         x = self.data[var].values.astype(float)
                         col_name = var
@@ -223,8 +219,8 @@ class ModelMatrix:
         return X_param, col_names
 
     def _construct_smooth_matrix(
-        self, smooth_spec: SmoothSpec, knots: Optional[dict] = None
-    ) -> tuple[np.ndarray, list[str], object, Optional[list]]:
+        self, smooth_spec: SmoothSpec, knots: dict | None = None
+    ) -> tuple[np.ndarray, list[str], object, list | None]:
         """Construct basis matrix for a smooth term.
 
         Handles:
@@ -248,91 +244,99 @@ class ModelMatrix:
             knots = {}
 
         # ---- Tensor product smooths (te, ti, t2) ----
-        if term_type in ('te', 'ti', 't2'):
+        if term_type in ("te", "ti", "t2"):
             var_names = smooth_spec.variables
             if len(var_names) < 2:
-                raise ValueError(f'{term_type}() requires at least 2 variables, got {var_names}')
+                raise ValueError(f"{term_type}() requires at least 2 variables, got {var_names}")
 
             data_dict = {v: self.data[v].values.astype(float) for v in var_names}
             k = smooth_spec.k  # k applies to each margin if scalar
 
-            if term_type == 't2':
+            if term_type == "t2":
                 basis_obj = TensorProductT2(
-                    data_dict, var_names,
+                    data_dict,
+                    var_names,
                     k_values=[k] * len(var_names) if k else None,
-                    basis_type='tp',
+                    basis_type="tp",
                 )
             else:
-                interaction_only = (term_type == 'ti')
+                interaction_only = term_type == "ti"
                 basis_obj = TensorProductSmooth(
-                    data_dict, var_names,
+                    data_dict,
+                    var_names,
                     k_values=[k] * len(var_names) if k else None,
-                    basis_type='tp',
+                    basis_type="tp",
                     interaction_only=interaction_only,
                 )
 
             X_smooth = basis_obj.basis_matrix()
-            col_names = [f'{smooth_spec.label}.{i}' for i in range(X_smooth.shape[1])]
+            col_names = [f"{smooth_spec.label}.{i}" for i in range(X_smooth.shape[1])]
             return X_smooth, col_names, basis_obj, by_levels
 
         # ---- Single-variable smooth (s) ----
-        if term_type == 's':
+        if term_type == "s":
             if len(smooth_spec.variables) == 0:
-                raise ValueError('s() requires at least 1 variable')
+                raise ValueError("s() requires at least 1 variable")
 
             # If multiple variables in s(), treat as TPRS multivariate
             if len(smooth_spec.variables) > 1:
                 var_names = smooth_spec.variables
-                X_multi = np.column_stack(
-                    [self.data[v].values.astype(float) for v in var_names]
-                )
+                X_multi = np.column_stack([self.data[v].values.astype(float) for v in var_names])
                 basis_obj = ThinPlateSpline(X_multi, k=smooth_spec.k)
                 X_smooth = basis_obj.basis_matrix()
-                col_names = [f'{smooth_spec.label}.{i}' for i in range(X_smooth.shape[1])]
+                col_names = [f"{smooth_spec.label}.{i}" for i in range(X_smooth.shape[1])]
                 return X_smooth, col_names, basis_obj, by_levels
 
             var_name = smooth_spec.variables[0]
             X_var = self.data[var_name].values.astype(float)
 
             # Select basis type based on bs/basis argument
-            if basis_code in ('cc', 'cp'):
+            if basis_code in ("cc", "cp"):
                 # Cyclic cubic spline
                 basis_obj = CyclicSpline(X_var, k=smooth_spec.k or 10)
                 X_smooth_base = basis_obj.basis_matrix()
 
-            elif basis_code == 're':
+            elif basis_code == "re":
                 # Random effect
                 basis_obj = RandomEffect(self.data[var_name], k=smooth_spec.k)
                 X_smooth_base = basis_obj.basis_matrix()
 
-            elif basis_code in ('bs', 'ps', 'cr', 'cs'):
+            elif basis_code in ("bs", "ps", "cr", "cs"):
                 # B-spline / P-spline / Cubic regression spline
                 user_knots = knots.get(var_name)  # None if not supplied
-                if basis_code in ('cr', 'cs'):
-                    from pymgcv.smooth.cubic_spline import CubicRegressionSpline, CubicShrinkageSpline
-                    cls = CubicShrinkageSpline if basis_code == 'cs' else CubicRegressionSpline
+                if basis_code in ("cr", "cs"):
+                    from pymgcv.smooth.cubic_spline import (
+                        CubicRegressionSpline,
+                        CubicShrinkageSpline,
+                    )
+
+                    cls = CubicShrinkageSpline if basis_code == "cs" else CubicRegressionSpline
                     basis_obj = cls(X_var, k=smooth_spec.k or 10, knots=user_knots)
-                elif basis_code == 'ps':
+                elif basis_code == "ps":
                     from pymgcv.smooth.bspline import PSplineBasis
+
                     basis_obj = PSplineBasis(X_var, k=smooth_spec.k or 20, knots=user_knots)
                 else:  # bs
                     from pymgcv.smooth.bspline import BSplineBasis
-                    basis_obj = BSplineBasis(X_var, k=smooth_spec.k or 10, knots=user_knots)
-                X_smooth_base = basis_obj.B if hasattr(basis_obj, 'B') else basis_obj.basis_matrix
 
-            elif basis_code == 'ad':
+                    basis_obj = BSplineBasis(X_var, k=smooth_spec.k or 10, knots=user_knots)
+                X_smooth_base = basis_obj.B if hasattr(basis_obj, "B") else basis_obj.basis_matrix
+
+            elif basis_code == "ad":
                 # Adaptive smooth
                 from pymgcv.smooth.advanced import AdaptiveSpline
+
                 basis_obj = AdaptiveSpline(X_var, k=smooth_spec.k or 20)
                 X_smooth_base = basis_obj.B
 
-            elif basis_code == 'gp':
+            elif basis_code == "gp":
                 # Gaussian process smooth
                 from pymgcv.smooth.advanced import GPSmooth
+
                 basis_obj = GPSmooth(X_var, k=smooth_spec.k or 10)
                 X_smooth_base = basis_obj.B
 
-            elif basis_code in ('fs', 'sz'):
+            elif basis_code in ("fs", "sz"):
                 # Factor smooth interaction: requires a by-variable
                 by_var = smooth_spec.by_variable
                 if by_var is None or by_var not in self.data.columns:
@@ -341,11 +345,13 @@ class ModelMatrix:
                     X_smooth_base = basis_obj.basis_matrix()
                 else:
                     group = self.data[by_var]
-                    if basis_code == 'fs':
+                    if basis_code == "fs":
                         from pymgcv.smooth.advanced import FactorSmooth
+
                         basis_obj = FactorSmooth(X_var, group, k=smooth_spec.k or 10)
                     else:
                         from pymgcv.smooth.advanced import FactorDeviation
+
                         basis_obj = FactorDeviation(X_var, group, k=smooth_spec.k or 10)
                     X_smooth_base = basis_obj.B
 
@@ -354,24 +360,22 @@ class ModelMatrix:
                 basis_obj = ThinPlateSpline(X_var.reshape(-1, 1), k=smooth_spec.k)
                 X_smooth_base = basis_obj.basis_matrix()
 
-        elif term_type == 're':
+        elif term_type == "re":
             # Standalone re() random effect
             if len(smooth_spec.variables) == 0:
-                raise ValueError('re() requires at least 1 variable')
+                raise ValueError("re() requires at least 1 variable")
             var_name = smooth_spec.variables[0]
             basis_obj = RandomEffect(self.data[var_name], k=smooth_spec.k)
             X_smooth_base = basis_obj.basis_matrix()
 
         else:
-            raise ValueError(f'Unknown smooth term type: {term_type}')
+            raise ValueError(f"Unknown smooth term type: {term_type}")
 
         # ---- by-variable expansion ----
-        X_smooth, by_levels = self._expand_by_variable(
-            X_smooth_base, smooth_spec, self.data
-        )
+        X_smooth, by_levels = self._expand_by_variable(X_smooth_base, smooth_spec, self.data)
 
         n_cols = X_smooth.shape[1]
-        col_names = [f'{smooth_spec.label}.{i}' for i in range(n_cols)]
+        col_names = [f"{smooth_spec.label}.{i}" for i in range(n_cols)]
         return X_smooth, col_names, basis_obj, by_levels
 
     def _expand_by_variable(
@@ -379,7 +383,7 @@ class ModelMatrix:
         X_basis: np.ndarray,
         smooth_spec: SmoothSpec,
         data: pd.DataFrame,
-    ) -> tuple[np.ndarray, Optional[list]]:
+    ) -> tuple[np.ndarray, list | None]:
         """Expand basis matrix for by-variable (varying-coefficient models).
 
         For s(x, by=group) with factor group:
@@ -408,7 +412,7 @@ class ModelMatrix:
         n, k = X_basis.shape
 
         # Detect factor vs continuous
-        if by_vals.dtype.kind in ('U', 'O', 'S') or hasattr(by_data, 'cat'):
+        if by_vals.dtype.kind in ("U", "O", "S") or hasattr(by_data, "cat"):
             # Factor by-variable
             levels = list(np.unique(by_vals.astype(str)))
             n_levels = len(levels)
@@ -416,9 +420,9 @@ class ModelMatrix:
 
             X_expanded = np.zeros((n, k * n_levels))
             for i, val in enumerate(by_vals.astype(str)):
-                level_idx = level_map.get(val, None)
+                level_idx = level_map.get(val)
                 if level_idx is not None:
-                    X_expanded[i, level_idx * k:(level_idx + 1) * k] = X_basis[i, :]
+                    X_expanded[i, level_idx * k : (level_idx + 1) * k] = X_basis[i, :]
 
             return X_expanded, levels
 
@@ -437,9 +441,7 @@ class ModelMatrix:
         n_param = X_param.shape[1]
 
         # Identify intercept column (all ones) — do not center or scale it
-        is_intercept = np.array([
-            np.allclose(X_param[:, j], 1.0) for j in range(n_param)
-        ])
+        is_intercept = np.array([np.allclose(X_param[:, j], 1.0) for j in range(n_param)])
 
         if self.center:
             self.center_mean = np.nanmean(X_param, axis=0)
@@ -465,7 +467,7 @@ class ModelMatrix:
             raise ValueError(f'Response "{response_col}" not found in data')
         return self.data[response_col].values.astype(float)
 
-    def offset_vector(self) -> Optional[np.ndarray]:
+    def offset_vector(self) -> np.ndarray | None:
         """Extract offset vector if present in formula."""
         if self.formula_parser.offset_term is None:
             return None
@@ -477,18 +479,18 @@ class ModelMatrix:
     def summary(self) -> str:
         """Return human-readable summary of design matrix."""
         lines = [
-            f'Design Matrix Summary',
-            f'=====================',
-            f'Observations: {self.n_obs}',
-            f'Columns: {self.p_cols}',
-            f'Parametric columns: {self.param_indices.stop - self.param_indices.start if self.param_indices else 0}',
-            f'Smooth basis columns: {sum(s.stop - s.start for s in self.smooth_indices)}',
-            f'',
-            f'Column names:',
+            "Design Matrix Summary",
+            "=====================",
+            f"Observations: {self.n_obs}",
+            f"Columns: {self.p_cols}",
+            f"Parametric columns: {self.param_indices.stop - self.param_indices.start if self.param_indices else 0}",
+            f"Smooth basis columns: {sum(s.stop - s.start for s in self.smooth_indices)}",
+            "",
+            "Column names:",
         ]
         for i, name in enumerate(self.column_names):
-            lines.append(f'  {i:2d}. {name}')
-        return '\n'.join(lines)
+            lines.append(f"  {i:2d}. {name}")
+        return "\n".join(lines)
 
 
 def assemble_design_matrix(
@@ -496,7 +498,7 @@ def assemble_design_matrix(
     formula: str,
     center: bool = True,
     scale: bool = False,
-) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """Functional API for assembling design matrix.
 
     Args:
