@@ -95,6 +95,23 @@ via its Fortran PIRLS machinery. This ≈ 1 % difference in *p* cascades into
 the dispersion and F-statistics; EDF, intercept, deviance explained, and
 predictions are near-identical.
 
+### Smooth Curve Comparison — pymgcv vs R mgcv
+
+![Campaign Smooth Comparison](docs/campaign_comparison.png)
+
+- **s(age)** — Both curves are monotone increasing (≈ exponential). The blue
+  (pymgcv, p = 1.331) and red-dashed (R mgcv, p = 1.344) lines are virtually
+  indistinguishable; confidence bands overlap completely.
+- **s(income_k)** — A mild positive trend in both implementations. Wider CIs
+  at high income reflect data sparsity. Curve shapes and magnitudes match
+  within < 1 %.
+- **s(contacts)** — Decreasing effect: more contacts → lower predicted spend.
+  Both models agree on the shape; the slight vertical offset traces back to
+  the 1 % power difference.
+
+> **Take-away:** Even with *estimated* Tweedie power (the hardest parity
+> case), the smooth shapes are indistinguishable in practice.
+
 ---
 
 ## Example 2 — Insurance Loss Cost Model (`loss_cost_model.py`)
@@ -242,6 +259,29 @@ cost model shows excellent numerical agreement:
 When *p* is fixed (not estimated), the residual differences between R and
 pymgcv reduce to sub-0.5 % and are entirely attributable to minor floating-point
 differences in knot selection and Cholesky factorisation across platforms.
+
+### Smooth Curve Comparison — pymgcv vs R mgcv
+
+![Loss Cost Smooth Comparison](docs/losscost_comparison.png)
+
+- **s(vehicle_age)** — Nearly flat (EDF ≈ 1). Both curves sit at ≈ 1.83
+  predicted loss cost with identical confidence bands. Vehicle age has minimal
+  marginal effect after controlling for other terms.
+- **s(driver_age)** — Linear decline from young (high risk, ≈ 2.2) to older
+  drivers (≈ 1.6). pymgcv and R mgcv lines overlap exactly.
+- **s(bonus_malus)** — Increasing risk with higher bonus-malus scores. Curves
+  diverge slightly above 300 where data is sparse, but the central trend is
+  identical.
+- **s(log10_exposure_usd)** — Positive, near-linear relationship. Both curves
+  agree within < 0.5 %; the slight curvature (EDF ≈ 1.09) is captured
+  identically.
+- **s(annual_mileage_km)** — Higher mileage → higher loss cost. Almost
+  perfectly linear (EDF ≈ 1.0). Blue and red-dashed lines are
+  indistinguishable.
+
+> **Take-away:** With fixed Tweedie power, all five smooth curves from pymgcv
+> and R mgcv are effectively identical — differences are < 0.5 % and purely
+> numerical.
 
 ---
 
