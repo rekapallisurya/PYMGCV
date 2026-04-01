@@ -87,15 +87,18 @@ docs = [
 all = [
     "pymgcv[gpu,viz,docs,dev]",
 ]
+full = [
+    "pymgcv[gpu,viz]",
+]
 
 # ── URLs ─────────────────────────────────────────────────────────────
 
 [project.urls]
-Homepage = "https://github.com/surya/pymgcv"
-Documentation = "https://pymgcv.readthedocs.io"
-Repository = "https://github.com/surya/pymgcv"
-Issues = "https://github.com/surya/pymgcv/issues"
-Changelog = "https://github.com/surya/pymgcv/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/rekapallisurya/PYMGCV"
+Documentation = "https://github.com/rekapallisurya/PYMGCV/blob/main/README.md"
+Repository = "https://github.com/rekapallisurya/PYMGCV"
+Issues = "https://github.com/rekapallisurya/PYMGCV/issues"
+Changelog = "https://github.com/rekapallisurya/PYMGCV/blob/main/CHANGELOG.md"
 
 # ── Setuptools configuration ────────────────────────────────────────
 
