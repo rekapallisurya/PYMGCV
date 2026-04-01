@@ -291,9 +291,63 @@ class ModelMatrix:
             X_var = self.data[var_name].values.astype(float)
 
             # Select basis type based on bs/basis argument
-            if basis_code in ("cc", "cp"):
-                # Cyclic cubic spline
+            if basis_code == "cc":
+                # Cyclic cubic regression spline
                 basis_obj = CyclicSpline(X_var, k=smooth_spec.k or 10)
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code == "cp":
+                # Cyclic P-spline
+                from pymgcv.smooth.cyclic_spline import CyclicPSpline
+
+                basis_obj = CyclicPSpline(X_var, k=smooth_spec.k or 20)
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code == "ts":
+                # Thin plate regression spline with shrinkage
+                basis_obj = ThinPlateSpline(
+                    X_var.reshape(-1, 1), k=smooth_spec.k, shrink=True
+                )
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code == "ds":
+                # Duchon spline (generalized TPS)
+                from pymgcv.smooth.thin_plate import DuchonSpline
+
+                m_order = 2
+                s_order = 0
+                if smooth_spec.m is not None:
+                    if isinstance(smooth_spec.m, tuple) and len(smooth_spec.m) >= 2:
+                        m_order, s_order = smooth_spec.m[0], smooth_spec.m[1]
+                    elif isinstance(smooth_spec.m, (int, float)):
+                        m_order = int(smooth_spec.m)
+                basis_obj = DuchonSpline(
+                    X_var.reshape(-1, 1), k=smooth_spec.k, m=m_order, s=s_order
+                )
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code == "sos":
+                # Spherical spline (requires 2 variables)
+                from pymgcv.smooth.thin_plate import SphericalSpline
+
+                if len(smooth_spec.variables) < 2:
+                    raise ValueError("sos basis requires 2 variables (lat, lon)")
+                lat_var = self.data[smooth_spec.variables[0]].values.astype(float)
+                lon_var = self.data[smooth_spec.variables[1]].values.astype(float)
+                basis_obj = SphericalSpline(lat_var, lon_var, k=smooth_spec.k)
+                X_smooth_base = basis_obj.basis_matrix()
+
+            elif basis_code == "mrf":
+                # Markov random field
+                from pymgcv.smooth.advanced import MarkovRandomField
+
+                neighbours = smooth_spec.bs_args.get("xt") or smooth_spec.bs_args.get(
+                    "neighbours"
+                )
+                penalty = smooth_spec.bs_args.get("penalty")
+                basis_obj = MarkovRandomField(
+                    self.data[var_name], penalty=penalty, neighbours=neighbours
+                )
                 X_smooth_base = basis_obj.basis_matrix()
 
             elif basis_code == "re":

@@ -360,3 +360,98 @@ class FactorDeviation:
             full[: S.shape[0], : S.shape[1]] = S
             mats.append(full)
         return mats
+
+
+# ---------------------------------------------------------------------------
+# Markov Random Field (bs='mrf')
+# ---------------------------------------------------------------------------
+
+
+class MarkovRandomField:
+    """Markov random field smooth (bs='mrf').
+
+    For discrete spatial data where space is divided into contiguous regions.
+    The penalty is the graph Laplacian of the neighborhood structure.
+
+    Parameters
+    ----------
+    region : array, shape (n,)
+        Factor variable giving region labels for each observation.
+    penalty : array, shape (n_regions, n_regions), optional
+        Penalty matrix (graph Laplacian). If None, computed from ``neighbours``.
+    neighbours : dict, optional
+        Dictionary mapping each region label to a list of neighboring labels.
+        Required if ``penalty`` is not provided.
+    k : int, optional
+        Basis dimension. Default: number of unique regions.
+
+    Attributes
+    ----------
+    B : array, shape (n, k)
+        Indicator basis matrix (one column per region).
+    S : array, shape (k, k)
+        Graph Laplacian penalty matrix.
+    levels : list
+        Sorted unique region labels.
+
+    References
+    ----------
+    Rue, H. & Held, L. (2005). Gaussian Markov Random Fields.
+    """
+
+    def __init__(
+        self,
+        region: np.ndarray,
+        penalty: np.ndarray | None = None,
+        neighbours: dict | None = None,
+        k: int | None = None,
+    ) -> None:
+        region = np.asarray(region, dtype=str).ravel()
+        self.n = len(region)
+        self.region = region
+        self.levels = sorted(np.unique(region).tolist())
+        n_regions = len(self.levels)
+        self.k = k if k is not None else n_regions
+        level_idx = {lv: i for i, lv in enumerate(self.levels)}
+
+        # Build indicator basis matrix
+        self.B = np.zeros((self.n, n_regions))
+        for i, r in enumerate(region):
+            idx = level_idx.get(r)
+            if idx is not None:
+                self.B[i, idx] = 1.0
+
+        # Build penalty (graph Laplacian)
+        if penalty is not None:
+            self.S = np.asarray(penalty, dtype=float)
+        elif neighbours is not None:
+            self.S = np.zeros((n_regions, n_regions))
+            for lv, nbrs in neighbours.items():
+                i = level_idx.get(str(lv))
+                if i is None:
+                    continue
+                for nb in nbrs:
+                    j = level_idx.get(str(nb))
+                    if j is not None and i != j:
+                        self.S[i, j] = -1.0
+                        self.S[j, i] = -1.0
+            # Diagonal = degree (negative row sums)
+            np.fill_diagonal(self.S, -self.S.sum(axis=1))
+        else:
+            raise ValueError("Either 'penalty' or 'neighbours' must be provided for MRF.")
+
+    def basis_matrix(self) -> np.ndarray:
+        return self.B
+
+    def penalty_matrix(self) -> np.ndarray:
+        return self.S
+
+    def predict(self, region_new: np.ndarray) -> np.ndarray:
+        region_new = np.asarray(region_new, dtype=str).ravel()
+        level_idx = {lv: i for i, lv in enumerate(self.levels)}
+        B_new = np.zeros((len(region_new), len(self.levels)))
+        for i, r in enumerate(region_new):
+            idx = level_idx.get(r)
+            if idx is not None:
+                B_new[i, idx] = 1.0
+        return B_new
